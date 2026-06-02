@@ -1,0 +1,35 @@
+{
+  "style_contract": "Original non-famous anime-inspired character image, clean light background, no text, no watermark, no signature, no known character likeness, suitable for ASCII conversion benchmarking.",
+  "prompts": [
+    {
+      "id": "line-eyes-01",
+      "group": "line-control",
+      "prompt": "Black-and-white line art eye/expression close-up with centered eyes, brows, nose bridge, and cheek lines."
+    },
+    {
+      "id": "line-hair-01",
+      "group": "line-control",
+      "prompt": "Black-and-white line art hair stress test with many flowing strands crossing the face and one visible eye."
+    },
+    {
+      "id": "color-face-01",
+      "group": "color",
+      "prompt": "Color three-quarter face portrait with short layered dark-blue hair, expressive eyes, soft cel shading, and clear outlines."
+    },
+    {
+      "id": "color-bust-01",
+      "group": "color",
+      "prompt": "Color bust portrait with long auburn hair, jacket collar, clothing folds, expressive eyes, soft cel shading, and clear outlines."
+    },
+    {
+      "id": "color-fullbody-01",
+      "group": "color",
+      "prompt": "Color full-body standing pose with readable silhouette, coat and skirt folds, soft cel shading, and clean light background."
+    },
+    {
+      "id": "color-stress-01",
+      "group": "color-stress",
+      "prompt": "Color close portrait with windblown multicolored hair crossing one eye and one hand near the cheek."
+    }
+  ]
+}

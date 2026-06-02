@@ -1,0 +1,97 @@
+{
+  "name": "generated-character-v1",
+  "description": "Six-image starter benchmark for character ASCII conversion, mixing color illustrations and line-art controls.",
+  "cases": [
+    {
+      "id": "line-eyes-01",
+      "image": "images/line-eyes-01.png",
+      "prompt": "Original non-famous anime-inspired character eye/expression close-up as clean black-and-white line art on a pure white background. Centered eyes, brows, nose bridge, cheek lines, crisp black strokes, no text, no watermark, no existing character likeness.",
+      "provenance": "imagegen built-in tool; generated 2026-06-01; copied from Codex generated_images into project benchmark assets",
+      "license_status": "generated original benchmark candidate; review product policy before public release",
+      "tags": ["line-art", "eyes", "expression", "character"],
+      "roi": [
+        { "label": "eyes", "x": 0.08, "y": 0.43, "width": 0.84, "height": 0.25 },
+        { "label": "face", "x": 0.05, "y": 0.20, "width": 0.90, "height": 0.70 },
+        { "label": "hair", "x": 0.00, "y": 0.00, "width": 1.00, "height": 0.48 }
+      ],
+      "notes": "Line-art control case for eye preservation and sparse facial detail."
+    },
+    {
+      "id": "line-hair-01",
+      "image": "images/line-hair-01.png",
+      "prompt": "Original non-famous anime-inspired hair stress test as clean black-and-white line art on a pure white background. Long flowing hair with many parallel strands crossing the face, one visible eye, dense but readable curves, no text, no watermark, no existing character likeness.",
+      "provenance": "imagegen built-in tool; generated 2026-06-01; copied from Codex generated_images into project benchmark assets",
+      "license_status": "generated original benchmark candidate; review product policy before public release",
+      "tags": ["line-art", "hair", "stress", "character"],
+      "roi": [
+        { "label": "eyes", "x": 0.48, "y": 0.35, "width": 0.24, "height": 0.15 },
+        { "label": "face", "x": 0.32, "y": 0.22, "width": 0.45, "height": 0.48 },
+        { "label": "hair", "x": 0.00, "y": 0.00, "width": 1.00, "height": 1.00 }
+      ],
+      "notes": "Line-art stress case for dense hair strands and eye occlusion."
+    },
+    {
+      "id": "color-face-01",
+      "image": "images/color-face-01.png",
+      "prompt": "Original non-famous anime-inspired color portrait illustration on a clean light background. Three-quarter face, short layered hair, expressive eyes, soft cel shading, clear colored hair and skin tones, visible line art, no text, no watermark, no existing character likeness.",
+      "provenance": "imagegen built-in tool; generated 2026-06-01; copied from Codex generated_images into project benchmark assets",
+      "license_status": "generated original benchmark candidate; review product policy before public release",
+      "tags": ["color", "face", "hair", "character"],
+      "roi": [
+        { "label": "eyes", "x": 0.40, "y": 0.43, "width": 0.34, "height": 0.12 },
+        { "label": "mouth", "x": 0.49, "y": 0.61, "width": 0.20, "height": 0.08 },
+        { "label": "face", "x": 0.30, "y": 0.30, "width": 0.46, "height": 0.48 },
+        { "label": "hair", "x": 0.14, "y": 0.03, "width": 0.78, "height": 0.48 },
+        { "label": "body", "x": 0.22, "y": 0.72, "width": 0.62, "height": 0.28 }
+      ],
+      "notes": "Color portrait case for grayscale conversion, line extraction, eyes, and hair shading."
+    },
+    {
+      "id": "color-bust-01",
+      "image": "images/color-bust-01.png",
+      "prompt": "Original non-famous anime-inspired color bust illustration on a clean light background. Character from chest up with long auburn hair over the shoulders, jacket collar, visible clothing folds, expressive eyes and small smile, soft cel shading, clear dark outlines, no text, no watermark, no existing character likeness.",
+      "provenance": "imagegen built-in tool; generated 2026-06-01; copied from Codex generated_images into project benchmark assets",
+      "license_status": "generated original benchmark candidate; review product policy before public release",
+      "tags": ["color", "bust", "hair", "clothing", "character"],
+      "roi": [
+        { "label": "eyes", "x": 0.33, "y": 0.34, "width": 0.31, "height": 0.12 },
+        { "label": "mouth", "x": 0.42, "y": 0.48, "width": 0.16, "height": 0.08 },
+        { "label": "face", "x": 0.28, "y": 0.20, "width": 0.40, "height": 0.42 },
+        { "label": "hair", "x": 0.05, "y": 0.02, "width": 0.90, "height": 0.80 },
+        { "label": "body", "x": 0.16, "y": 0.58, "width": 0.74, "height": 0.40 }
+      ],
+      "notes": "Color bust case for hair, face, and clothing fold preservation."
+    },
+    {
+      "id": "color-fullbody-01",
+      "image": "images/color-fullbody-01.png",
+      "prompt": "Original non-famous anime-inspired color full-body illustration on a white or very light background. Character in a simple standing pose, readable silhouette, skirt or coat folds, hair shape visible, soft cel shading, clear dark outlines, no text, no watermark, no existing character likeness.",
+      "provenance": "imagegen built-in tool; generated 2026-06-01; copied from Codex generated_images into project benchmark assets",
+      "license_status": "generated original benchmark candidate; review product policy before public release",
+      "tags": ["color", "full-body", "silhouette", "clothing", "character"],
+      "roi": [
+        { "label": "eyes", "x": 0.42, "y": 0.15, "width": 0.16, "height": 0.07 },
+        { "label": "face", "x": 0.38, "y": 0.09, "width": 0.24, "height": 0.17 },
+        { "label": "hair", "x": 0.30, "y": 0.04, "width": 0.38, "height": 0.25 },
+        { "label": "body", "x": 0.25, "y": 0.24, "width": 0.52, "height": 0.68 }
+      ],
+      "notes": "Color full-body case for small face recognizability and silhouette retention."
+    },
+    {
+      "id": "color-stress-01",
+      "image": "images/color-stress-01.png",
+      "prompt": "Original non-famous anime-inspired color stress-test illustration on a clean light background. Close portrait with windblown multicolored hair strands crossing one eye and one hand near the cheek, overlapping fingers and hair, soft cel shading, clear dark outlines, high detail but readable, no text, no watermark, no existing character likeness.",
+      "provenance": "imagegen built-in tool; generated 2026-06-01; copied from Codex generated_images into project benchmark assets",
+      "license_status": "generated original benchmark candidate; review product policy before public release",
+      "tags": ["color", "hair", "hands", "stress", "character"],
+      "roi": [
+        { "label": "eyes", "x": 0.55, "y": 0.34, "width": 0.23, "height": 0.16 },
+        { "label": "mouth", "x": 0.50, "y": 0.56, "width": 0.20, "height": 0.09 },
+        { "label": "face", "x": 0.40, "y": 0.22, "width": 0.40, "height": 0.44 },
+        { "label": "hair", "x": 0.00, "y": 0.00, "width": 1.00, "height": 0.92 },
+        { "label": "body", "x": 0.32, "y": 0.62, "width": 0.44, "height": 0.33 }
+      ],
+      "notes": "Color stress case for multicolored hair, overlapping fingers, and face occlusion."
+    }
+  ]
+}
