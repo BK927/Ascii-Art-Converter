@@ -9,16 +9,26 @@ use aa_core::{
     save_ascii_png, save_ascii_text, save_stage_bundle,
 };
 use eframe::egui::{
-    self, Color32, ComboBox, FontFamily, FontId, Frame, Image, Margin, RichText, ScrollArea,
-    Slider, Stroke, TextureHandle, TextureOptions, Vec2,
+    self, Color32, ComboBox, FontFamily, FontId, Frame, Margin, RichText, ScrollArea, Slider,
+    Stroke, TextureHandle, TextureOptions, Vec2,
 };
 use image::RgbaImage;
+
+const SIDEBAR_WIDTH: f32 = 348.0;
+const ACCENT: Color32 = Color32::from_rgb(43, 128, 148);
+const ACCENT_STRONG: Color32 = Color32::from_rgb(34, 112, 133);
+const SIDEBAR_BG: Color32 = Color32::from_rgb(29, 33, 33);
+const SIDEBAR_PANEL: Color32 = Color32::from_rgb(37, 42, 42);
+const SIDEBAR_TEXT: Color32 = Color32::from_rgb(219, 224, 214);
+const SIDEBAR_MUTED: Color32 = Color32::from_rgb(159, 169, 160);
+const CANVAS_BG: Color32 = Color32::from_rgb(236, 232, 223);
+const CANVAS_PANEL: Color32 = Color32::from_rgb(228, 224, 214);
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1120.0, 780.0])
-            .with_min_inner_size([920.0, 640.0]),
+            .with_inner_size([1180.0, 800.0])
+            .with_min_inner_size([980.0, 660.0]),
         ..Default::default()
     };
 
@@ -351,7 +361,7 @@ impl AaApp {
     }
 
     fn sidebar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        let footer_height = 146.0;
+        let footer_height = 142.0;
         let controls_height = (ui.available_height() - footer_height).max(280.0);
 
         ScrollArea::vertical()
@@ -366,34 +376,32 @@ impl AaApp {
     }
 
     fn sidebar_controls(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        ui.label(RichText::new("AA Converter").size(22.0).strong());
+        ui.label(RichText::new("AA Converter").size(23.0).strong());
         ui.label(
             RichText::new(self.profile.label())
                 .small()
-                .color(Color32::from_rgb(166, 176, 172)),
+                .color(SIDEBAR_MUTED),
         );
 
-        ui.add_space(14.0);
-        ui.horizontal(|ui| {
-            if ui
-                .add_sized(
-                    [ui.available_width() * 0.58, 32.0],
-                    egui::Button::new("Open Image"),
-                )
+        ui.add_space(16.0);
+        ui.columns(2, |columns| {
+            let open_width = columns[0].available_width();
+            if columns[0]
+                .add_sized([open_width, 34.0], egui::Button::new("Open Image"))
                 .clicked()
             {
                 self.open_image(ctx);
             }
-            if ui
-                .add_sized([ui.available_width(), 32.0], egui::Button::new("Font"))
+            let font_width = columns[1].available_width();
+            if columns[1]
+                .add_sized([font_width, 34.0], egui::Button::new("Select Font"))
                 .clicked()
             {
                 self.open_font();
             }
         });
 
-        ui.add_space(8.0);
-        ui.label(RichText::new("Preset").strong());
+        section_label(ui, "Preset");
         ui.horizontal_wrapped(|ui| {
             if preset_button(ui, "Paper", self.profile == ProfilePreset::Paper).clicked() {
                 self.apply_paper_preset();
@@ -412,13 +420,13 @@ impl AaApp {
             }
         });
 
-        ui.add_space(8.0);
+        ui.add_space(10.0);
         path_line(ui, "Image", self.image_path.as_deref());
         path_line(ui, "Font", self.font_path.as_deref());
 
-        ui.add_space(14.0);
-        ui.label(RichText::new("Pipeline").strong());
+        section_label(ui, "Pipeline");
         ComboBox::from_id_salt("input-mode")
+            .width(ui.available_width())
             .selected_text(match self.config.input_mode {
                 InputMode::ExtractStructureLines => "structure lines",
                 InputMode::TreatAsBinaryLines => "binary lines",
@@ -447,6 +455,7 @@ impl AaApp {
             });
 
         ComboBox::from_id_salt("structure-mode")
+            .width(ui.available_width())
             .selected_text(match self.config.structure_line_mode {
                 StructureLineMode::FlowDog => "ETF/FDoG-style",
                 StructureLineMode::ScharrMagnitude => "Scharr",
@@ -475,6 +484,7 @@ impl AaApp {
             });
 
         ComboBox::from_id_salt("thinning-mode")
+            .width(ui.available_width())
             .selected_text(match self.config.thinning_mode {
                 ThinningMode::KmmK3mLookup => "KMM/K3M lookup",
                 ThinningMode::ZhangSuen => "Zhang-Suen",
@@ -503,6 +513,7 @@ impl AaApp {
             });
 
         ComboBox::from_id_salt("placement-mode")
+            .width(ui.available_width())
             .selected_text(match self.config.placement_mode {
                 PlacementMode::PaperGreedy => "paper greedy",
                 PlacementMode::LeftToRight => "left to right",
@@ -530,9 +541,8 @@ impl AaApp {
                 }
             });
 
-        ui.add_space(10.0);
-        ui.label(RichText::new("Geometry").strong());
-        if compact_slider(
+        section_label(ui, "Geometry");
+        if u32_slider(
             ui,
             &mut self.config.max_input_width,
             128..=1280,
@@ -542,66 +552,46 @@ impl AaApp {
         {
             self.profile = ProfilePreset::Custom;
         }
-        if ui
-            .add(Slider::new(&mut self.config.font_px, 8.0..=32.0).text("font px"))
-            .changed()
-        {
+        if f32_slider(ui, &mut self.config.font_px, 8.0..=32.0, "font px").changed() {
             self.profile = ProfilePreset::Custom;
         }
-        if compact_slider(ui, &mut self.config.stripe_stride_px, 10..=44, "stripe px").changed() {
+        if u32_slider(ui, &mut self.config.stripe_stride_px, 10..=44, "stripe px").changed() {
             self.profile = ProfilePreset::Custom;
         }
 
-        ui.add_space(10.0);
-        ui.label(RichText::new("Features").strong());
-        if ui
-            .add(Slider::new(&mut self.config.gaussian_sigma, 0.3..=2.2).text("blur"))
-            .changed()
-        {
+        section_label(ui, "Features");
+        if f32_slider(ui, &mut self.config.gaussian_sigma, 0.3..=2.2, "blur").changed() {
             self.profile = ProfilePreset::Custom;
         }
-        if ui
-            .add(Slider::new(&mut self.config.edge_threshold, 0.04..=0.72).text("edge"))
-            .changed()
-        {
+        if f32_slider(ui, &mut self.config.edge_threshold, 0.04..=0.72, "edge").changed() {
             self.profile = ProfilePreset::Custom;
         }
-        if ui
-            .add(Slider::new(&mut self.config.binary_threshold, 0.05..=0.95).text("binary"))
-            .changed()
-        {
+        if f32_slider(ui, &mut self.config.binary_threshold, 0.05..=0.95, "binary").changed() {
             self.profile = ProfilePreset::Custom;
         }
 
-        ui.add_space(10.0);
-        ui.label(RichText::new("Scoring").strong());
-        if ui
-            .add(Slider::new(&mut self.config.mismatch_weight, 0.0..=2.0).text("mismatch"))
-            .changed()
-        {
+        section_label(ui, "Scoring");
+        if f32_slider(ui, &mut self.config.mismatch_weight, 0.0..=2.0, "mismatch").changed() {
             self.profile = ProfilePreset::Custom;
         }
-        if ui
-            .add(Slider::new(&mut self.config.match_weight, 0.1..=2.5).text("match"))
-            .changed()
-        {
+        if f32_slider(ui, &mut self.config.match_weight, 0.1..=2.5, "match").changed() {
             self.profile = ProfilePreset::Custom;
         }
-        if ui
-            .add(Slider::new(&mut self.config.score_cutoff, -240.0..=60.0).text("cutoff"))
-            .changed()
-        {
+        if f32_slider(ui, &mut self.config.score_cutoff, -240.0..=60.0, "cutoff").changed() {
             self.profile = ProfilePreset::Custom;
         }
-        if ui
-            .add(Slider::new(&mut self.config.glyph_alpha_threshold, 0.02..=0.6).text("glyph ink"))
-            .changed()
+        if f32_slider(
+            ui,
+            &mut self.config.glyph_alpha_threshold,
+            0.02..=0.6,
+            "glyph ink",
+        )
+        .changed()
         {
             self.profile = ProfilePreset::Custom;
         }
 
-        ui.add_space(10.0);
-        ui.label(RichText::new("Characters").strong());
+        section_label(ui, "Characters");
         if ui
             .add(
                 egui::TextEdit::multiline(&mut self.config.character_set)
@@ -619,52 +609,53 @@ impl AaApp {
         let running = self.pending.is_some();
         let can_export = self.result.is_some();
 
-        ui.add_space(10.0);
-        ui.add(
-            egui::Label::new(
-                RichText::new(&self.status)
-                    .small()
-                    .color(Color32::from_rgb(210, 214, 205)),
-            )
-            .wrap(),
-        );
+        Frame::new()
+            .fill(SIDEBAR_PANEL)
+            .stroke(Stroke::new(1.0, Color32::from_rgb(48, 55, 55)))
+            .inner_margin(Margin::same(10))
+            .show(ui, |ui| {
+                ui.add(
+                    egui::Label::new(RichText::new(&self.status).small().color(SIDEBAR_TEXT))
+                        .wrap(),
+                );
 
-        ui.add_space(8.0);
-        let convert_fill = if running {
-            Color32::from_rgb(66, 76, 78)
-        } else {
-            Color32::from_rgb(49, 126, 147)
-        };
-        let convert_button = egui::Button::new(
-            RichText::new(if running { "Converting..." } else { "Convert" })
-                .strong()
-                .color(Color32::WHITE),
-        )
-        .fill(convert_fill)
-        .min_size(Vec2::new(ui.available_width(), 40.0));
-        if ui.add_enabled(!running, convert_button).clicked() {
-            self.run_conversion();
-        }
-
-        ui.add_space(6.0);
-        let ctx = ui.ctx().clone();
-        ui.columns(4, |columns| {
-            if footer_button(&mut columns[0], can_export, "TXT").clicked() {
-                self.export_text();
-            }
-            if footer_button(&mut columns[1], can_export, "PNG").clicked() {
-                self.export_png();
-            }
-            if footer_button(&mut columns[2], can_export, "Stages").clicked() {
-                self.export_stages();
-            }
-            if footer_button(&mut columns[3], can_export, "Copy").clicked() {
-                if let Some(result) = &self.result {
-                    ctx.copy_text(result.text.clone());
-                    self.status = "Copied text.".to_owned();
+                ui.add_space(8.0);
+                let convert_fill = if running {
+                    Color32::from_rgb(66, 76, 78)
+                } else {
+                    ACCENT
+                };
+                let convert_button = egui::Button::new(
+                    RichText::new(if running { "Converting..." } else { "Convert" })
+                        .strong()
+                        .color(Color32::WHITE),
+                )
+                .fill(convert_fill)
+                .min_size(Vec2::new(ui.available_width(), 40.0));
+                if ui.add_enabled(!running, convert_button).clicked() {
+                    self.run_conversion();
                 }
-            }
-        });
+
+                ui.add_space(6.0);
+                let ctx = ui.ctx().clone();
+                ui.columns(4, |columns| {
+                    if footer_button(&mut columns[0], can_export, "TXT").clicked() {
+                        self.export_text();
+                    }
+                    if footer_button(&mut columns[1], can_export, "PNG").clicked() {
+                        self.export_png();
+                    }
+                    if footer_button(&mut columns[2], can_export, "Stages").clicked() {
+                        self.export_stages();
+                    }
+                    if footer_button(&mut columns[3], can_export, "Copy").clicked() {
+                        if let Some(result) = &self.result {
+                            ctx.copy_text(result.text.clone());
+                            self.status = "Copied text.".to_owned();
+                        }
+                    }
+                });
+            });
     }
 
     fn preview(&mut self, ui: &mut egui::Ui) {
@@ -741,9 +732,31 @@ impl AaApp {
             return;
         }
 
-        ui.columns(2, |columns| {
-            labeled_texture(&mut columns[0], "Original", self.original_texture.as_ref());
-            labeled_texture(&mut columns[1], "ASCII", self.ascii_texture.as_ref());
+        let available = ui.available_size();
+        let gap = 12.0;
+        let pane_size = Vec2::new(
+            ((available.x - gap) / 2.0).max(220.0),
+            available.y.max(260.0),
+        );
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            texture_pane(
+                ui,
+                Some("Original"),
+                self.original_texture.as_ref(),
+                "Original image pending",
+                pane_size,
+                false,
+            );
+            texture_pane(
+                ui,
+                Some("ASCII"),
+                self.ascii_texture.as_ref(),
+                "ASCII preview pending",
+                pane_size,
+                false,
+            );
         });
     }
 
@@ -754,33 +767,44 @@ impl AaApp {
         };
 
         let mut text = result.text.clone();
-        ScrollArea::both()
-            .auto_shrink([false, false])
+        let available = ui.available_size();
+        let editor_size = Vec2::new(available.x.max(320.0), available.y.max(260.0));
+
+        Frame::new()
+            .fill(Color32::from_rgb(6, 7, 7))
+            .stroke(Stroke::new(1.0, Color32::from_rgb(65, 66, 62)))
+            .inner_margin(Margin::same(12))
             .show(ui, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut text)
-                        .font(FontId::new(12.0, FontFamily::Monospace))
-                        .desired_width(f32::INFINITY)
-                        .interactive(false),
-                );
+                ui.set_min_size(editor_size - Vec2::splat(24.0));
+                ScrollArea::both()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.add_sized(
+                            ui.available_size().max(Vec2::new(480.0, 320.0)),
+                            egui::TextEdit::multiline(&mut text)
+                                .font(FontId::new(12.0, FontFamily::Monospace))
+                                .desired_width(f32::INFINITY)
+                                .interactive(false),
+                        );
+                    });
             });
     }
 
     fn empty_state(&mut self, ui: &mut egui::Ui) {
         let available = ui.available_size();
-        let height = available.y.min(420.0).max(240.0);
+        let height = available.y.min(400.0).max(240.0);
 
         Frame::new()
-            .fill(Color32::from_rgb(228, 225, 216))
-            .stroke(Stroke::new(1.0, Color32::from_rgb(190, 186, 174)))
-            .inner_margin(Margin::same(24))
+            .fill(CANVAS_PANEL)
+            .stroke(Stroke::new(1.0, Color32::from_rgb(188, 184, 172)))
+            .inner_margin(Margin::same(28))
             .show(ui, |ui| {
                 ui.set_min_size(Vec2::new(available.x.max(260.0), height));
                 ui.vertical_centered(|ui| {
-                    ui.add_space((height * 0.30).min(130.0));
+                    ui.add_space((height * 0.28).min(118.0));
                     ui.label(
                         RichText::new("No image loaded")
-                            .size(22.0)
+                            .size(24.0)
                             .strong()
                             .color(Color32::from_rgb(55, 57, 52)),
                     );
@@ -794,8 +818,8 @@ impl AaApp {
                     let open_button = egui::Button::new(
                         RichText::new("Open Image").strong().color(Color32::WHITE),
                     )
-                    .fill(Color32::from_rgb(49, 126, 147))
-                    .min_size(Vec2::new(132.0, 36.0));
+                    .fill(ACCENT)
+                    .min_size(Vec2::new(150.0, 38.0));
                     if ui.add(open_button).clicked() {
                         let ctx = ui.ctx().clone();
                         self.open_image(&ctx);
@@ -812,20 +836,12 @@ impl eframe::App for AaApp {
 
         egui::SidePanel::left("controls")
             .resizable(false)
-            .exact_width(320.0)
-            .frame(
-                Frame::new()
-                    .fill(Color32::from_rgb(31, 34, 34))
-                    .inner_margin(Margin::same(18)),
-            )
+            .exact_width(SIDEBAR_WIDTH)
+            .frame(Frame::new().fill(SIDEBAR_BG).inner_margin(Margin::same(18)))
             .show(ctx, |ui| self.sidebar(ctx, ui));
 
         egui::CentralPanel::default()
-            .frame(
-                Frame::new()
-                    .fill(Color32::from_rgb(235, 232, 224))
-                    .inner_margin(Margin::same(18)),
-            )
+            .frame(Frame::new().fill(CANVAS_BG).inner_margin(Margin::same(18)))
             .show(ctx, |ui| self.preview(ui));
     }
 }
@@ -834,13 +850,14 @@ fn tune_style(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
     style.spacing.item_spacing = Vec2::new(8.0, 8.0);
     style.spacing.button_padding = Vec2::new(10.0, 6.0);
+    style.spacing.slider_width = 154.0;
     style.visuals = egui::Visuals::dark();
-    style.visuals.panel_fill = Color32::from_rgb(27, 29, 31);
-    style.visuals.window_fill = Color32::from_rgb(27, 29, 31);
+    style.visuals.panel_fill = SIDEBAR_BG;
+    style.visuals.window_fill = SIDEBAR_BG;
     style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(45, 49, 52);
     style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(61, 70, 74);
-    style.visuals.widgets.active.bg_fill = Color32::from_rgb(49, 126, 147);
-    style.visuals.selection.bg_fill = Color32::from_rgb(49, 126, 147);
+    style.visuals.widgets.active.bg_fill = ACCENT;
+    style.visuals.selection.bg_fill = ACCENT;
     style.visuals.faint_bg_color = Color32::from_rgb(38, 41, 43);
     ctx.set_style(style);
 }
@@ -854,6 +871,11 @@ impl ProfilePreset {
             Self::Custom => "Custom profile",
         }
     }
+}
+
+fn section_label(ui: &mut egui::Ui, label: &str) {
+    ui.add_space(14.0);
+    ui.label(RichText::new(label).strong().color(SIDEBAR_TEXT));
 }
 
 fn load_paper_config() -> Result<(AsciiConfig, PathBuf, usize), String> {
@@ -873,7 +895,7 @@ fn load_color_config() -> Result<(AsciiConfig, PathBuf), String> {
 
 fn preset_button(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
     let fill = if selected {
-        Color32::from_rgb(49, 126, 147)
+        ACCENT
     } else {
         Color32::from_rgb(45, 49, 52)
     };
@@ -888,24 +910,36 @@ fn footer_button(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Respons
 }
 
 fn path_line(ui: &mut egui::Ui, label: &str, path: Option<&Path>) {
-    ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(label)
-                .small()
-                .color(Color32::from_rgb(154, 164, 154)),
-        );
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.label(RichText::new(label).small().color(SIDEBAR_MUTED));
         let value = path.map(compact_path).unwrap_or_else(|| "none".to_owned());
-        ui.label(RichText::new(value).small());
+        ui.add(egui::Label::new(RichText::new(value).small().color(SIDEBAR_TEXT)).wrap());
     });
 }
 
-fn compact_slider(
+fn u32_slider(
     ui: &mut egui::Ui,
     value: &mut u32,
     range: std::ops::RangeInclusive<u32>,
     text: &str,
 ) -> egui::Response {
-    ui.add(Slider::new(value, range).text(text))
+    ui.add_sized(
+        [ui.available_width(), 22.0],
+        Slider::new(value, range).text(text),
+    )
+}
+
+fn f32_slider(
+    ui: &mut egui::Ui,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    text: &str,
+) -> egui::Response {
+    ui.add_sized(
+        [ui.available_width(), 22.0],
+        Slider::new(value, range).text(text),
+    )
 }
 
 impl PreviewTab {
@@ -933,9 +967,9 @@ fn preview_tab(ui: &mut egui::Ui, selected: &mut PreviewTab, tab: PreviewTab) {
     let is_selected = *selected == tab;
     let label = tab.label();
     let fill = if is_selected {
-        Color32::from_rgb(49, 126, 147)
+        ACCENT_STRONG
     } else {
-        Color32::from_rgb(219, 216, 207)
+        Color32::from_rgb(222, 218, 208)
     };
     let text_color = if is_selected {
         Color32::WHITE
@@ -957,51 +991,98 @@ fn show_texture_or_stage_placeholder(
     texture: Option<&TextureHandle>,
     placeholder: &str,
 ) {
-    let Some(texture) = texture else {
-        stage_placeholder(ui, placeholder);
-        return;
-    };
-
-    show_texture(ui, texture);
+    let available = ui.available_size();
+    texture_pane(
+        ui,
+        None,
+        texture,
+        placeholder,
+        Vec2::new(available.x.max(260.0), available.y.max(260.0)),
+        true,
+    );
 }
 
 fn show_texture(ui: &mut egui::Ui, texture: &TextureHandle) {
-    ScrollArea::both()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            let available = ui.available_size();
-            let size = texture.size_vec2();
-            let scale = (available.x / size.x)
-                .min(available.y / size.y)
-                .clamp(0.25, 8.0);
-            let image_size = size * scale;
-            ui.add(Image::new(texture).fit_to_exact_size(image_size));
-        });
-}
-
-fn labeled_texture(ui: &mut egui::Ui, label: &str, texture: Option<&TextureHandle>) {
-    ui.label(
-        RichText::new(label)
-            .small()
-            .strong()
-            .color(Color32::from_rgb(75, 76, 72)),
-    );
-    ui.add_space(6.0);
-    show_fit_texture(ui, texture);
-}
-
-fn show_fit_texture(ui: &mut egui::Ui, texture: Option<&TextureHandle>) {
-    let Some(texture) = texture else {
-        stage_placeholder(ui, "ASCII preview pending");
-        return;
-    };
-
     let available = ui.available_size();
-    let size = texture.size_vec2();
-    let scale = (available.x / size.x)
-        .min(available.y / size.y)
-        .clamp(0.25, 8.0);
-    ui.add(Image::new(texture).fit_to_exact_size(size * scale));
+    texture_pane(
+        ui,
+        None,
+        Some(texture),
+        "Preview pending",
+        Vec2::new(available.x.max(260.0), available.y.max(260.0)),
+        true,
+    );
+}
+
+fn texture_pane(
+    ui: &mut egui::Ui,
+    label: Option<&str>,
+    texture: Option<&TextureHandle>,
+    placeholder: &str,
+    pane_size: Vec2,
+    allow_upscale: bool,
+) {
+    let (rect, _) = ui.allocate_exact_size(pane_size, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+
+    painter.rect_filled(rect, 0.0, CANVAS_PANEL);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0, Color32::from_rgb(196, 192, 181)),
+        egui::StrokeKind::Inside,
+    );
+
+    let mut content_rect = rect.shrink(12.0);
+    if let Some(label) = label {
+        painter.text(
+            content_rect.left_top(),
+            egui::Align2::LEFT_TOP,
+            label,
+            FontId::new(12.0, FontFamily::Proportional),
+            Color32::from_rgb(75, 76, 72),
+        );
+        content_rect.min.y += 24.0;
+    }
+
+    if let Some(texture) = texture {
+        let image_size = fitted_size(texture.size_vec2(), content_rect.size(), allow_upscale);
+        let image_rect = egui::Rect::from_center_size(content_rect.center(), image_size);
+        painter.image(
+            texture.id(),
+            image_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    } else {
+        let placeholder_rect = content_rect.shrink(12.0);
+        painter.rect_filled(placeholder_rect, 0.0, Color32::from_rgb(226, 222, 212));
+        painter.rect_stroke(
+            placeholder_rect,
+            0.0,
+            Stroke::new(1.0, Color32::from_rgb(198, 194, 183)),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            placeholder_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            placeholder,
+            FontId::new(12.0, FontFamily::Proportional),
+            Color32::from_rgb(89, 88, 81),
+        );
+    }
+}
+
+fn fitted_size(source: Vec2, bounds: Vec2, allow_upscale: bool) -> Vec2 {
+    if source.x <= 0.0 || source.y <= 0.0 {
+        return bounds;
+    }
+
+    let max_scale = if allow_upscale { 8.0 } else { 1.0 };
+    let scale = (bounds.x / source.x)
+        .min(bounds.y / source.y)
+        .clamp(0.05, max_scale);
+    source * scale
 }
 
 fn stage_placeholder(ui: &mut egui::Ui, title: &str) {
@@ -1009,7 +1090,7 @@ fn stage_placeholder(ui: &mut egui::Ui, title: &str) {
     let height = available.y.min(360.0).max(180.0);
 
     Frame::new()
-        .fill(Color32::from_rgb(229, 226, 216))
+        .fill(CANVAS_PANEL)
         .stroke(Stroke::new(1.0, Color32::from_rgb(196, 192, 181)))
         .inner_margin(Margin::same(18))
         .show(ui, |ui| {
