@@ -4,14 +4,14 @@ version = 4
 
 [[package]]
 name = "aa-cli"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "aa-core",
 ]
 
 [[package]]
 name = "aa-core"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "fontdue",
  "image",
@@ -26,7 +26,7 @@ dependencies = [
 
 [[package]]
 name = "aa-egui"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "aa-core",
  "arboard",
@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "aa-wasm"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "aa-core",
  "console_error_panic_hook",
