@@ -17,6 +17,7 @@ use eframe::egui::{
 use image::RgbaImage;
 
 const SIDEBAR_WIDTH: f32 = 348.0;
+const APP_ICON_PNG: &[u8] = include_bytes!("../../../assets/icons/aa-converter-icon.png");
 const ACCENT: Color32 = Color32::from_rgb(43, 128, 148);
 const ACCENT_STRONG: Color32 = Color32::from_rgb(34, 112, 133);
 const SIDEBAR_BG: Color32 = Color32::from_rgb(29, 33, 33);
@@ -30,7 +31,8 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 800.0])
-            .with_min_inner_size([980.0, 660.0]),
+            .with_min_inner_size([980.0, 660.0])
+            .with_icon(load_app_icon()),
         ..Default::default()
     };
 
@@ -39,6 +41,18 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|cc| Ok(Box::new(AaApp::new(cc)))),
     )
+}
+
+fn load_app_icon() -> egui::IconData {
+    let icon = image::load_from_memory(APP_ICON_PNG)
+        .expect("bundled app icon should be a valid PNG")
+        .into_rgba8();
+
+    egui::IconData {
+        width: icon.width(),
+        height: icon.height(),
+        rgba: icon.into_raw(),
+    }
 }
 
 struct AaApp {
