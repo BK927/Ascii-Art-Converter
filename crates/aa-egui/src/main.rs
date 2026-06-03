@@ -435,7 +435,10 @@ impl AaApp {
 
         section_label(ui, "Preset");
         ui.horizontal_wrapped(|ui| {
-            if preset_button(ui, "Clean lines", self.profile == ProfilePreset::Paper).clicked() {
+            if preset_button(ui, "Clean lines", self.profile == ProfilePreset::Paper)
+                .on_hover_text("Best starting point for clean black-and-white character line art.")
+                .clicked()
+            {
                 self.apply_paper_preset();
             }
             if preset_button(
@@ -443,11 +446,15 @@ impl AaApp {
                 "Color edges",
                 self.profile == ProfilePreset::ColorIllustration,
             )
+            .on_hover_text("Experimental color-boundary extraction for color illustrations.")
             .clicked()
             {
                 self.apply_color_preset();
             }
-            if preset_button(ui, "Sensitive", self.profile == ProfilePreset::LineArt).clicked() {
+            if preset_button(ui, "Sensitive", self.profile == ProfilePreset::LineArt)
+                .on_hover_text("Picks up faint, thin, or detail-heavy line art more aggressively.")
+                .clicked()
+            {
                 self.apply_line_art_preset();
             }
         });
@@ -484,7 +491,11 @@ impl AaApp {
                 {
                     self.profile = ProfilePreset::Custom;
                 }
-            });
+            })
+            .response
+            .on_hover_text(
+                "Choose whether the app should extract structure lines or treat the image as already-clean line art.",
+            );
 
         ComboBox::from_id_salt("structure-mode")
             .width(ui.available_width())
@@ -513,7 +524,9 @@ impl AaApp {
                 {
                     self.profile = ProfilePreset::Custom;
                 }
-            });
+            })
+            .response
+            .on_hover_text("ETF/FDoG-style favors smoother coherent contours; Scharr is sharper but can catch more noise.");
 
         ComboBox::from_id_salt("thinning-mode")
             .width(ui.available_width())
@@ -542,7 +555,9 @@ impl AaApp {
                 {
                     self.profile = ProfilePreset::Custom;
                 }
-            });
+            })
+            .response
+            .on_hover_text("Reduces detected lines into thin strokes before glyph matching.");
 
         ComboBox::from_id_salt("placement-mode")
             .width(ui.available_width())
@@ -571,7 +586,9 @@ impl AaApp {
                 {
                     self.profile = ProfilePreset::Custom;
                 }
-            });
+            })
+            .response
+            .on_hover_text("paper greedy is the recommended placement mode; left to right is mainly a comparison baseline.");
 
         section_label(ui, "Geometry");
         if u32_slider(
@@ -580,36 +597,67 @@ impl AaApp {
             128..=1280,
             "max width",
         )
+        .on_hover_text(
+            "Working image width. Higher values preserve more detail and use more characters, but run slower.",
+        )
         .changed()
         {
             self.profile = ProfilePreset::Custom;
         }
-        if f32_slider(ui, &mut self.config.font_px, 8.0..=32.0, "font px").changed() {
+        if f32_slider(ui, &mut self.config.font_px, 8.0..=32.0, "font px")
+            .on_hover_text("Glyph size. Smaller values make denser ASCII art; larger values make it simpler and chunkier.")
+            .changed()
+        {
             self.profile = ProfilePreset::Custom;
         }
-        if u32_slider(ui, &mut self.config.stripe_stride_px, 10..=44, "stripe px").changed() {
+        if u32_slider(ui, &mut self.config.stripe_stride_px, 10..=44, "stripe px")
+            .on_hover_text("Vertical row spacing. Lower values pack rows tighter; higher values leave more space.")
+            .changed()
+        {
             self.profile = ProfilePreset::Custom;
         }
 
         section_label(ui, "Features");
-        if f32_slider(ui, &mut self.config.gaussian_sigma, 0.3..=2.2, "blur").changed() {
+        if f32_slider(ui, &mut self.config.gaussian_sigma, 0.3..=2.2, "blur")
+            .on_hover_text("Smooths strokes before orientation scoring. Higher values reduce noise but can erase small detail.")
+            .changed()
+        {
             self.profile = ProfilePreset::Custom;
         }
-        if f32_slider(ui, &mut self.config.edge_threshold, 0.04..=0.72, "edge").changed() {
+        if f32_slider(ui, &mut self.config.edge_threshold, 0.04..=0.72, "edge")
+            .on_hover_text("Edge sensitivity. Lower values keep faint edges; higher values keep only stronger contours.")
+            .changed()
+        {
             self.profile = ProfilePreset::Custom;
         }
-        if f32_slider(ui, &mut self.config.binary_threshold, 0.05..=0.95, "binary").changed() {
+        if f32_slider(ui, &mut self.config.binary_threshold, 0.05..=0.95, "binary")
+            .on_hover_text(
+                "Black/white cutoff for line-art input. Lower values keep lighter gray strokes.",
+            )
+            .changed()
+        {
             self.profile = ProfilePreset::Custom;
         }
 
         section_label(ui, "Scoring");
-        if f32_slider(ui, &mut self.config.mismatch_weight, 0.0..=2.0, "mismatch").changed() {
+        if f32_slider(ui, &mut self.config.mismatch_weight, 0.0..=2.0, "mismatch")
+            .on_hover_text("Penalty for glyph ink that does not match the extracted line image.")
+            .changed()
+        {
             self.profile = ProfilePreset::Custom;
         }
-        if f32_slider(ui, &mut self.config.match_weight, 0.1..=2.5, "match").changed() {
+        if f32_slider(ui, &mut self.config.match_weight, 0.1..=2.5, "match")
+            .on_hover_text("Reward for glyph strokes that align with the extracted image.")
+            .changed()
+        {
             self.profile = ProfilePreset::Custom;
         }
-        if f32_slider(ui, &mut self.config.score_cutoff, -240.0..=60.0, "cutoff").changed() {
+        if f32_slider(ui, &mut self.config.score_cutoff, -240.0..=60.0, "cutoff")
+            .on_hover_text(
+                "Minimum score for placing a glyph. Higher values reject more weak matches.",
+            )
+            .changed()
+        {
             self.profile = ProfilePreset::Custom;
         }
         if f32_slider(
@@ -617,6 +665,9 @@ impl AaApp {
             &mut self.config.glyph_alpha_threshold,
             0.02..=0.6,
             "glyph ink",
+        )
+        .on_hover_text(
+            "How much font alpha counts as visible ink. Higher values make glyph masks stricter.",
         )
         .changed()
         {
@@ -630,6 +681,9 @@ impl AaApp {
                     .desired_rows(4)
                     .font(FontId::new(12.0, FontFamily::Monospace))
                     .desired_width(f32::INFINITY),
+            )
+            .on_hover_text(
+                "Character set used for glyph placement. Changing it can strongly alter the final style.",
             )
             .changed()
         {

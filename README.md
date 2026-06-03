@@ -1,29 +1,56 @@
 # AA Converter
 
-AA Converter is a Rust workspace for converting images into rendered ASCII art.
-It focuses on character illustration and line-art inputs, commercial-safe font
-profiles, and benchmarkable output rather than bit-for-bit reproduction of any
-single paper figure.
+A Rust-based image-to-ASCII-art converter focused on anime/character
+illustrations, line art, and commercial-safe font choices.
 
-The core implementation is inspired by the text-placement pipeline in Moonjun
-Chung and Taesoo Kwon's 2022 IEEE Access paper, "Fast Text Placement Scheme for
-ASCII Art Synthesis". The project also includes experimental variants that try
-to improve the baseline placement quality for practical image-to-ASCII use.
+<p align="center">
+  <img src="docs/images/readme-demo.png" alt="AA Converter demo: original character line art converted into rendered ASCII art" width="900">
+</p>
 
-Repository: <https://github.com/BK927/Ascii-Art-Converter>
+AA Converter turns input images into rendered ASCII-art PNGs and approximate
+text output. Unlike density-only converters, it experiments with structure-line
+extraction, orientation-aware glyph scoring, and research-inspired glyph
+placement for character illustrations and line-art-heavy images.
 
-## Workspace
+## Features
 
-- `crates/aa-core`: image preprocessing, glyph scoring, placement, rendering,
-  and benchmark logic.
-- `crates/aa-cli`: command-line conversion and benchmark runner.
-- `crates/aa-egui`: desktop GUI prototype built with `egui`/`eframe`.
-- `assets/fonts`: bundled font assets and license notices.
-- `assets/benchmarks`: generated benchmark manifests and input images.
+- Character illustration and line-art oriented image-to-ASCII conversion.
+- Desktop app and command-line conversion.
+- Rendered PNG output and approximate `.txt` output.
+- Presets for clean line art, faint line art, and experimental color-edge input.
+- Bundled font profile intended for commercial-safe use.
+
+## Recommended Inputs
+
+The default preset is designed for clean character line art:
+
+- white or light background
+- black or dark gray line art
+- one character or character-focused crop
+- clear eyes, hair, face, and body contours
+- minimal background detail
+
+The app presets are:
+
+- `Clean lines`: default recommendation for clean black-and-white line art.
+- `Sensitive`: more aggressive line pickup for faint, thin, or detail-heavy
+  line art.
+- `Color edges`: experimental color-boundary extraction for color
+  illustrations. It still renders monochrome ASCII art.
+
+Photos, heavily shaded paintings, complex backgrounds, and color-only details
+are not the primary target for this version.
+
+## Requirements
+
+- Rust toolchain with Rust 2024 edition support.
+- Primarily tested on Windows.
+- Linux and macOS are currently unverified.
+- No GPU is required.
 
 ## Quick Start
 
-Run the desktop GUI:
+Run the desktop app:
 
 ```powershell
 cargo run -p aa-egui
@@ -35,162 +62,72 @@ Convert one image from the command line:
 cargo run -p aa-cli -- --input path\to\input.png --out target\aa-output
 ```
 
-Use the paper-inspired preset explicitly:
+Use the color-edge experimental preset:
 
 ```powershell
-cargo run -p aa-cli -- --input path\to\input.png --out target\aa-output --preset paper
+cargo run -p aa-cli -- --input path\to\input.png --out target\aa-color --preset color
 ```
+
+The app includes `Clean lines`, `Sensitive`, and `Color edges` presets. CLI
+presets include `paper`, `color`, and `default`.
 
 The output directory contains:
 
-- `01-structure-lines.png`: extracted line image.
-- `02-orientation-map.png`: orientation preview.
-- `03-ascii-render.png`: rendered ASCII art image.
-- `04-ascii.txt`: approximate text output.
-- `metrics.txt`: pipeline timings and basic stats.
+- a rendered ASCII-art PNG
+- an approximate ASCII text file
+- preview images from the conversion process
 
-## Benchmark Runner
+## Controls
 
-Run the starter benchmark:
+The desktop app exposes a few tuning controls:
 
-```powershell
-cargo run -p aa-cli -- bench run --manifest assets\benchmarks\generated-v1\manifest.json --out target\benchmarks\generated-v1
-```
+- `Preset`: start with `Clean lines`. Use `Sensitive` for faint or thin line
+  art, and `Color edges` for experimental color-boundary extraction.
+- `Input mode`: `structure lines` extracts lines from the image.
+  `binary lines` treats the input as already-clean black-and-white line art.
+- `Structure`: `ETF/FDoG-style` favors smoother, coherent contours. `Scharr`
+  is sharper and more direct, but can pick up more noise.
+- `Thinning`: reduces extracted lines into thin strokes. `KMM/K3M lookup` is
+  the default; `Zhang-Suen` is an alternate thinning method.
+- `Placement`: `paper greedy` is the recommended placement mode.
+  `left to right` is mainly useful for comparison.
+- `max width`: larger values preserve more detail and use more characters, but
+  take longer and can keep more noise.
+- `font px`: smaller glyphs create denser ASCII art; larger glyphs create a
+  chunkier, simpler result.
+- `stripe px`: lower values make text rows denser; higher values leave more
+  vertical space.
+- `blur`: higher values smooth the detected strokes; lower values keep sharper
+  detail.
+- `edge`: lower values keep more faint edges; higher values keep only stronger
+  contours.
+- `binary`: adjusts the black/white cutoff for line-art input. Lower values
+  keep lighter gray strokes.
+- `match`, `mismatch`, and `cutoff`: glyph scoring controls. The defaults are
+  usually the best starting point.
+- `glyph ink`: lower values allow lighter glyph pixels to count; higher values
+  make glyph masks stricter.
+- `Characters`: the character set used for ASCII placement. Changing it can
+  strongly change the final style.
 
-The benchmark writes:
+## How It Works
 
-- `report.json`: metrics and paths for all cases.
-- `index.html`: blind A/B comparison gallery.
-- `overview.html`: side-by-side gallery with algorithm names and metrics.
-- Per-case stage bundles under `cases/`.
+AA Converter extracts structure lines, estimates stroke orientation, scores
+font glyphs against the extracted image, places the best glyphs, and renders
+the result as PNG/TXT output.
 
-Example research comparison:
+This project is inspired by published ASCII-art and line-drawing research, not
+a bit-exact reproduction of any paper.
 
-```powershell
-cargo run -p aa-cli -- bench run --manifest assets\benchmarks\generated-v1\manifest.json --out target\benchmarks\generated-v1-interval --algorithms paper-greedy,paper-greedy-interval,paper-greedy-interval-clean,paper-greedy-interval-balanced
-```
+## References
 
-## Algorithms
-
-The benchmark runner currently supports these algorithm IDs:
-
-- `density-grid`: simple density baseline.
-- `fixed-grid`: fixed grid with glyph score matching.
-- `left-to-right`: sequential baseline using the same score model.
-- `paper-greedy`: the main Chung/Kwon-style greedy divide-and-conquer
-  placement baseline.
-- `paper-greedy-clean`: `paper-greedy` with dense/noisy glyphs pruned.
-- `paper-greedy-balanced`: cleaner `paper-greedy` with a slightly more
-  conservative score threshold.
-- `paper-greedy-pretty`: a sparse aesthetic variant.
-- `paper-greedy-kang`: a Kang ETF/FDoG-leaning preprocessing variant.
-- `paper-greedy-kmm`: an alternate paper/KMM stride profile.
-- `paper-greedy-kang-kmm`: combined Kang-style preprocessing and KMM profile.
-- `paper-greedy-interval`: interval-search placement over each stripe.
-- `paper-greedy-interval-clean`: interval search with dense/noisy glyph
-  pruning. This currently scores higher on several automatic metrics in the
-  bundled generated-v1 benchmark, but it is not promoted as the default because
-  the visual difference from `paper-greedy` is often small.
-- `paper-greedy-interval-balanced`: interval search with more conservative
-  density.
-- `paper-greedy-postprune`: post-placement support pruning experiment.
-- `paper-greedy-local-prune`: post-placement local removal experiment.
-- `ours-current`: alias for the current recommended baseline candidate.
-
-The default benchmark suite stays small (`left-to-right,paper-greedy`) so that
-the starter benchmark finishes in a practical amount of time.
-
-## Current Pipeline
-
-1. Resize the input to a working width.
-2. Extract a thin binary structure-line image from grayscale or binary input.
-3. Optionally boost color-boundary edges for color illustrations.
-4. Apply pre-thinning denoising.
-5. Skeletonize with the current KMM/K3M-family lookup thinning pass.
-6. Extract per-pixel orientation using Gaussian blur, Scharr gradients, and a
-   local orientation window.
-7. Rasterize the configured character set from the selected font.
-8. Score each glyph with orientation-aware match and mismatch terms.
-9. Place glyphs by the selected placement algorithm.
-10. Render PNG/TXT output and benchmark stage bundles.
-
-## Font And License Notes
-
-The bundled `saitamaar-16` profile uses:
-
-- `assets/fonts/Saitamaar-Regular.ttf`
-- `assets/fonts/Saitamaar-OFL.txt`
-
-Saitamaar is bundled with its OFL notice. For commercial or product use, keep
-the font license file with any distributed font asset. The generated ASCII
-documents/images are not automatically subject to the font license, but the
-font file itself and modified font files are.
-
-The benchmark runner also supports `noto-commercial-16` and `custom` profiles,
-but official scoring requires an explicit font license file:
-
-```powershell
-cargo run -p aa-cli -- bench run --manifest assets\benchmarks\generated-v1\manifest.json --out target\benchmarks\custom --font-profile custom --font path\to\font.ttf --font-license path\to\LICENSE.txt
-```
-
-## Fidelity Notes
-
-This project is not a bit-exact reproduction of the IEEE Access paper. The
-paper does not publish every implementation detail needed for exact figure
-matching, including the exact 752-character list/order, all preprocessing
-parameters, and some blank-filling/tie-breaking behavior.
-
-The implementation is intentionally organized so that these pieces can be
-swapped independently:
-
-- Structure-line extraction (`ETF/FDoG`-style and Scharr alternatives).
-- Thinning mode.
-- Glyph set and font profile.
-- Glyph scoring weights.
-- Placement algorithm.
-
-## Implementation References
-
-The ASCII-art logic in this repository was implemented with reference to these
-papers:
-
-- Moonjun Chung and Taesoo Kwon. "Fast Text Placement Scheme for ASCII Art
-  Synthesis." IEEE Access, 10:40677-40686, 2022. DOI:
-  `10.1109/ACCESS.2022.3167567`. This is the primary reference for the
-  structure-line, feature extraction, glyph scoring, and greedy text-placement
-  pipeline.
-- Henry Kang, Seungyong Lee, and Charles K. Chui. "Coherent Line Drawing."
-  NPAR 2007. DOI: `10.1145/1274871.1274878`. This is the reference for the
-  Edge Tangent Flow / Flow-based Difference-of-Gaussians idea used by the
-  structure-line extraction path.
-- Khalid Saeed, Marek Tabedzki, Mariusz Rybnik, and Marcin Adamski. "K3M: A
-  Universal Algorithm for Image Skeletonization and a Review of Thinning
-  Techniques." International Journal of Applied Mathematics and Computer
-  Science, 20(2):317-335, 2010. DOI: `10.2478/v10006-010-0024-4`. This is a
-  reference for the K3M-family skeletonization/thinning approach.
-- Khalid Saeed, Mariusz Rybnik, and Marek Tabedzki. "Implementation and
-  Advanced Results on the Non-Interrupted Skeletonization Algorithm." This is
-  a reference for the KMM skeletonization family discussed by Chung and Kwon.
-
-## Development
-
-Format and check:
-
-```powershell
-cargo fmt --check
-cargo check -p aa-core
-cargo check -p aa-cli
-cargo check -p aa-egui
-```
-
-Run tests:
-
-```powershell
-cargo test
-```
+- [Fast Text Placement Scheme for ASCII Art Synthesis](https://gwern.net/doc/design/typography/2022-chung.pdf)
+- [Coherent Line Drawing](https://www.umsl.edu/~kangh/Papers/kang_npar07_hi.pdf)
+- [K3M: A Universal Algorithm for Image Skeletonization and a Review of Thinning Techniques](https://sciendo.com/article/10.2478/v10006-010-0024-4)
+- [Implementation and Advanced Results on the Non-Interrupted Skeletonization Algorithm](https://home.agh.edu.pl/~saeed/arts/2001%20CAIP.pdf)
 
 ## License
 
-The Rust workspace is licensed as `MIT OR Apache-2.0` in `Cargo.toml`.
+The project code is licensed as `MIT OR Apache-2.0` in `Cargo.toml`.
 Bundled third-party font assets keep their own license notices under
 `assets/fonts/`.
