@@ -1,16 +1,18 @@
 use std::collections::HashSet;
 use std::f32::consts::PI;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 use fontdue::{Font, FontSettings};
 use image::imageops::FilterType;
 use image::{DynamicImage, GrayImage, ImageBuffer, Luma, Rgba, RgbaImage};
 use imageproc::filter;
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use ttf_parser::Face;
+use web_time::{Duration, Instant};
 
+#[cfg(feature = "benchmark")]
 pub mod benchmark;
 
 #[derive(Debug, thiserror::Error)]
@@ -476,15 +478,27 @@ pub fn convert_image(
     let stripe_count = line_image.height.div_ceil(config.stripe_stride_px) as usize;
 
     let started = Instant::now();
+    #[cfg(feature = "parallel")]
     let stripe_scores: Vec<StripeScore> = (0..stripe_count)
         .into_par_iter()
+        .map(|stripe| score_stripe(&features, &glyphs, stripe as u32, config))
+        .collect();
+    #[cfg(not(feature = "parallel"))]
+    let stripe_scores: Vec<StripeScore> = (0..stripe_count)
         .map(|stripe| score_stripe(&features, &glyphs, stripe as u32, config))
         .collect();
     timings.scoring = started.elapsed();
 
     let started = Instant::now();
+    #[cfg(feature = "parallel")]
     let stripe_results: Vec<Vec<PlacedGlyph>> = stripe_scores
         .par_iter()
+        .enumerate()
+        .map(|(stripe, scores)| place_stripe(scores, &glyphs, stripe as u32, config))
+        .collect();
+    #[cfg(not(feature = "parallel"))]
+    let stripe_results: Vec<Vec<PlacedGlyph>> = stripe_scores
+        .iter()
         .enumerate()
         .map(|(stripe, scores)| place_stripe(scores, &glyphs, stripe as u32, config))
         .collect();
@@ -1296,9 +1310,35 @@ fn score_stripe(
 ) -> StripeScore {
     let stripe_y = stripe * config.stripe_stride_px;
     let width = features.width;
+    #[cfg(feature = "parallel")]
     let candidates: Vec<Candidate> = (0..width)
         .into_par_iter()
         .flat_map_iter(|x| {
+            glyphs
+                .iter()
+                .enumerate()
+                .filter_map(move |(glyph_index, glyph)| {
+                    if x + glyph.advance > width {
+                        return None;
+                    }
+
+                    let score = if glyph.is_blank {
+                        0.0
+                    } else {
+                        score_glyph_at(features, glyph, x, stripe_y, config)
+                    };
+
+                    Some(Candidate {
+                        x,
+                        glyph_index,
+                        score,
+                    })
+                })
+        })
+        .collect();
+    #[cfg(not(feature = "parallel"))]
+    let candidates: Vec<Candidate> = (0..width)
+        .flat_map(|x| {
             glyphs
                 .iter()
                 .enumerate()

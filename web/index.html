@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="AA Converter turns character illustrations and line art into rendered ASCII art in the browser."
+    />
+    <link rel="icon" href="%BASE_URL%favicon.ico" sizes="any" />
+    <link rel="icon" href="%BASE_URL%icon.png" type="image/png" />
+    <title>AA Converter</title>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand">
+          <img src="%BASE_URL%icon.png" alt="" />
+          <div>
+            <h1>AA Converter</h1>
+            <p>Browser ASCII workbench</p>
+          </div>
+        </div>
+        <div class="status-pill" id="status">Ready</div>
+      </header>
+
+      <main class="workspace">
+        <aside class="controls" aria-label="Conversion controls">
+          <label class="dropzone" id="dropzone">
+            <input id="file-input" type="file" accept="image/*" />
+            <span class="drop-title">Open image</span>
+            <span class="drop-meta" id="file-meta">No file selected</span>
+          </label>
+
+          <section class="control-section" aria-label="Preset">
+            <h2>Preset</h2>
+            <div class="segmented" id="preset-group">
+              <button class="selected" type="button" data-preset="clean">Clean lines</button>
+              <button type="button" data-preset="sensitive">Sensitive</button>
+              <button type="button" data-preset="color">Color edges</button>
+            </div>
+          </section>
+
+          <section class="control-section" aria-label="Geometry">
+            <h2>Geometry</h2>
+            <label class="slider-row">
+              <span>max width <output id="max-width-value">512</output></span>
+              <input id="max-width" type="range" min="128" max="1280" step="32" value="512" />
+            </label>
+            <label class="slider-row">
+              <span>font px <output id="font-px-value">16</output></span>
+              <input id="font-px" type="range" min="8" max="32" step="0.5" value="16" />
+            </label>
+            <label class="slider-row">
+              <span>stripe px <output id="stripe-px-value">16</output></span>
+              <input id="stripe-px" type="range" min="10" max="44" step="1" value="16" />
+            </label>
+          </section>
+
+          <section class="control-section" aria-label="Line detection">
+            <h2>Lines</h2>
+            <label class="slider-row">
+              <span>blur <output id="blur-value">0.70</output></span>
+              <input id="blur" type="range" min="0.3" max="2.2" step="0.05" value="0.7" />
+            </label>
+            <label class="slider-row">
+              <span>edge <output id="edge-value">0.22</output></span>
+              <input id="edge" type="range" min="0.04" max="0.72" step="0.01" value="0.22" />
+            </label>
+            <label class="slider-row">
+              <span>binary <output id="binary-value">0.58</output></span>
+              <input id="binary" type="range" min="0.05" max="0.95" step="0.01" value="0.58" />
+            </label>
+          </section>
+
+          <section class="control-section" aria-label="Glyph scoring">
+            <h2>Scoring</h2>
+            <label class="slider-row">
+              <span>match <output id="match-value">1.00</output></span>
+              <input id="match" type="range" min="0.1" max="2.5" step="0.05" value="1" />
+            </label>
+            <label class="slider-row">
+              <span>mismatch <output id="mismatch-value">0.65</output></span>
+              <input id="mismatch" type="range" min="0" max="2" step="0.05" value="0.65" />
+            </label>
+            <label class="slider-row">
+              <span>cutoff <output id="cutoff-value">0</output></span>
+              <input id="cutoff" type="range" min="-240" max="60" step="1" value="0" />
+            </label>
+            <label class="slider-row">
+              <span>glyph ink <output id="glyph-ink-value">0.16</output></span>
+              <input id="glyph-ink" type="range" min="0.02" max="0.6" step="0.01" value="0.16" />
+            </label>
+          </section>
+
+          <section class="control-section" aria-label="Character set">
+            <h2>Characters</h2>
+            <textarea id="characters" spellcheck="false" placeholder="Preset character set"></textarea>
+          </section>
+
+          <div class="actions">
+            <button class="primary" id="convert" type="button" disabled>Convert</button>
+            <button id="copy-text" type="button" disabled>Copy TXT</button>
+            <button id="download-png" type="button" disabled>Download PNG</button>
+            <button id="download-txt" type="button" disabled>Download TXT</button>
+          </div>
+
+          <p class="privacy">Images stay in this browser session.</p>
+        </aside>
+
+        <section class="preview-grid" aria-label="Preview">
+          <article class="preview-panel large">
+            <div class="panel-title">
+              <h2>Original</h2>
+              <span id="original-size">-</span>
+            </div>
+            <canvas id="original-canvas"></canvas>
+          </article>
+
+          <article class="preview-panel large output-panel">
+            <div class="panel-title">
+              <h2>ASCII</h2>
+              <span id="ascii-size">-</span>
+            </div>
+            <canvas id="ascii-canvas"></canvas>
+          </article>
+
+          <article class="preview-panel small">
+            <div class="panel-title">
+              <h2>Lines</h2>
+            </div>
+            <canvas id="line-canvas"></canvas>
+          </article>
+
+          <article class="preview-panel small">
+            <div class="panel-title">
+              <h2>Direction</h2>
+            </div>
+            <canvas id="orientation-canvas"></canvas>
+          </article>
+
+          <article class="preview-panel stats-panel">
+            <div class="panel-title">
+              <h2>Run</h2>
+              <span id="timing-total">-</span>
+            </div>
+            <dl id="stats-list">
+              <div><dt>Glyphs</dt><dd>-</dd></div>
+              <div><dt>Placed</dt><dd>-</dd></div>
+              <div><dt>Strokes</dt><dd>-</dd></div>
+              <div><dt>Working</dt><dd>-</dd></div>
+            </dl>
+          </article>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

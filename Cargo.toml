@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/aa-core", "crates/aa-egui", "crates/aa-cli"]
+members = ["crates/aa-core", "crates/aa-egui", "crates/aa-cli", "crates/aa-wasm"]
 resolver = "2"
 
 [workspace.package]
@@ -18,6 +18,10 @@ imageproc = "0.25"
 rayon = "1.11"
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+serde_bytes = "0.11"
 serde_json = "1"
 thiserror = "2"
 ttf-parser = "0.25"
+wasm-bindgen = "0.2"
+web-time = "1.1"

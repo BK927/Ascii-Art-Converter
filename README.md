@@ -12,10 +12,14 @@ text output. Unlike density-only converters, it experiments with structure-line
 extraction, orientation-aware glyph scoring, and research-inspired glyph
 placement for character illustrations and line-art-heavy images.
 
+Use it in the browser: [AA Converter Web](https://bk927.github.io/Ascii-Art-Converter/)
+
+Download the desktop app: [GitHub Releases](https://github.com/BK927/Ascii-Art-Converter/releases)
+
 ## Features
 
 - Character illustration and line-art oriented image-to-ASCII conversion.
-- Desktop app and command-line conversion.
+- Browser runner, desktop app, and command-line conversion.
 - Rendered PNG output and approximate `.txt` output.
 - Presets for clean line art, faint line art, and experimental color-edge input.
 - Bundled font profile intended for commercial-safe use.
