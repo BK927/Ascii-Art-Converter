@@ -9,6 +9,7 @@ repository = "https://github.com/BK927/Ascii-Art-Converter"
 
 [workspace.dependencies]
 aa-core = { path = "crates/aa-core" }
+arboard = "3.6"
 eframe = "0.33"
 egui = "0.33"
 fontdue = "0.9"

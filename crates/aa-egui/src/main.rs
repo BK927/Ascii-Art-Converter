@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
@@ -8,6 +9,7 @@ use aa_core::{
     ThinningMode, color_illustration_preset, find_default_font, find_paper_font, paper_preset,
     save_ascii_png, save_ascii_text, save_stage_bundle,
 };
+use arboard::{Clipboard, ImageData};
 use eframe::egui::{
     self, Color32, ComboBox, FontFamily, FontId, Frame, Margin, RichText, ScrollArea, Slider,
     Stroke, TextureHandle, TextureOptions, Vec2,
@@ -81,7 +83,9 @@ impl AaApp {
                 config,
                 Some(path),
                 ProfilePreset::Paper,
-                format!("Paper profile ready: {chars} chars / target {PAPER_CHARACTER_TARGET}"),
+                format!(
+                    "Clean line-art preset ready: {chars} chars / target {PAPER_CHARACTER_TARGET}"
+                ),
             ),
             Err(_) => {
                 let font_path = find_default_font();
@@ -166,12 +170,12 @@ impl AaApp {
                 self.font_path = Some(path);
                 self.profile = ProfilePreset::Paper;
                 self.status = format!(
-                    "Paper preset ready: {} chars / target {}",
+                    "Clean line-art preset ready: {} chars / target {}",
                     chars, PAPER_CHARACTER_TARGET
                 );
             }
             Err(err) => {
-                self.status = format!("Paper preset failed: {err}");
+                self.status = format!("Clean line-art preset failed: {err}");
             }
         }
     }
@@ -187,7 +191,7 @@ impl AaApp {
             self.font_path = Some(path);
         }
         self.profile = ProfilePreset::ColorIllustration;
-        self.status = "Color illustration preset ready.".to_owned();
+        self.status = "Color edge preset ready.".to_owned();
     }
 
     fn apply_line_art_preset(&mut self) {
@@ -216,7 +220,7 @@ impl AaApp {
             self.font_path = Some(path);
         }
         self.profile = ProfilePreset::LineArt;
-        self.status = "Line art preset ready.".to_owned();
+        self.status = "Sensitive line preset ready.".to_owned();
     }
 
     fn run_conversion(&mut self) {
@@ -360,8 +364,36 @@ impl AaApp {
         }
     }
 
+    fn copy_text(&mut self, ctx: &egui::Context) {
+        let Some(result) = &self.result else {
+            self.status = "Nothing to copy yet.".to_owned();
+            return;
+        };
+
+        ctx.copy_text(result.text.clone());
+        self.status = "Copied ASCII text.".to_owned();
+    }
+
+    fn copy_image(&mut self) {
+        let Some(result) = &self.result else {
+            self.status = "Nothing to copy yet.".to_owned();
+            return;
+        };
+
+        let image = ImageData {
+            width: result.ascii_preview.width() as usize,
+            height: result.ascii_preview.height() as usize,
+            bytes: Cow::Owned(result.ascii_preview.clone().into_raw()),
+        };
+
+        match Clipboard::new().and_then(|mut clipboard| clipboard.set_image(image)) {
+            Ok(()) => self.status = "Copied rendered image.".to_owned(),
+            Err(err) => self.status = format!("Image copy failed: {err}"),
+        }
+    }
+
     fn sidebar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        let footer_height = 142.0;
+        let footer_height = 188.0;
         let controls_height = (ui.available_height() - footer_height).max(280.0);
 
         ScrollArea::vertical()
@@ -403,19 +435,19 @@ impl AaApp {
 
         section_label(ui, "Preset");
         ui.horizontal_wrapped(|ui| {
-            if preset_button(ui, "Paper", self.profile == ProfilePreset::Paper).clicked() {
+            if preset_button(ui, "Clean lines", self.profile == ProfilePreset::Paper).clicked() {
                 self.apply_paper_preset();
             }
             if preset_button(
                 ui,
-                "Color",
+                "Color edges",
                 self.profile == ProfilePreset::ColorIllustration,
             )
             .clicked()
             {
                 self.apply_color_preset();
             }
-            if preset_button(ui, "Line", self.profile == ProfilePreset::LineArt).clicked() {
+            if preset_button(ui, "Sensitive", self.profile == ProfilePreset::LineArt).clicked() {
                 self.apply_line_art_preset();
             }
         });
@@ -638,21 +670,23 @@ impl AaApp {
 
                 ui.add_space(6.0);
                 let ctx = ui.ctx().clone();
-                ui.columns(4, |columns| {
-                    if footer_button(&mut columns[0], can_export, "TXT").clicked() {
+                ui.columns(2, |columns| {
+                    if footer_button(&mut columns[0], can_export, "Copy ASCII").clicked() {
+                        self.copy_text(&ctx);
+                    }
+                    if footer_button(&mut columns[1], can_export, "Copy Image").clicked() {
+                        self.copy_image();
+                    }
+                });
+                ui.columns(3, |columns| {
+                    if footer_button(&mut columns[0], can_export, "Save TXT").clicked() {
                         self.export_text();
                     }
-                    if footer_button(&mut columns[1], can_export, "PNG").clicked() {
+                    if footer_button(&mut columns[1], can_export, "Save PNG").clicked() {
                         self.export_png();
                     }
                     if footer_button(&mut columns[2], can_export, "Stages").clicked() {
                         self.export_stages();
-                    }
-                    if footer_button(&mut columns[3], can_export, "Copy").clicked() {
-                        if let Some(result) = &self.result {
-                            ctx.copy_text(result.text.clone());
-                            self.status = "Copied text.".to_owned();
-                        }
                     }
                 });
             });
@@ -667,6 +701,8 @@ impl AaApp {
             preview_tab(ui, &mut self.preview_tab, PreviewTab::Ascii);
             preview_tab(ui, &mut self.preview_tab, PreviewTab::Text);
         });
+
+        self.preview_actions(ui);
 
         if self.pending.is_some() {
             ui.add_space(4.0);
@@ -724,6 +760,31 @@ impl AaApp {
             ),
             PreviewTab::Text => self.show_text(ui),
         }
+    }
+
+    fn preview_actions(&mut self, ui: &mut egui::Ui) {
+        let can_export = self.result.is_some();
+        let ctx = ui.ctx().clone();
+
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            if action_button(ui, can_export, "Copy ASCII").clicked() {
+                self.copy_text(&ctx);
+            }
+            if action_button(ui, can_export, "Copy Image").clicked() {
+                self.copy_image();
+            }
+            ui.add_space(6.0);
+            if action_button(ui, can_export, "Save TXT").clicked() {
+                self.export_text();
+            }
+            if action_button(ui, can_export, "Save PNG").clicked() {
+                self.export_png();
+            }
+            if action_button(ui, can_export, "Save Stages").clicked() {
+                self.export_stages();
+            }
+        });
     }
 
     fn show_compare(&mut self, ui: &mut egui::Ui) {
@@ -865,9 +926,9 @@ fn tune_style(ctx: &egui::Context) {
 impl ProfilePreset {
     fn label(self) -> &'static str {
         match self {
-            Self::Paper => "Paper greedy profile",
-            Self::ColorIllustration => "Color illustration profile",
-            Self::LineArt => "Line art profile",
+            Self::Paper => "Clean line-art preset",
+            Self::ColorIllustration => "Color edge preset",
+            Self::LineArt => "Sensitive line preset",
             Self::Custom => "Custom profile",
         }
     }
@@ -906,6 +967,24 @@ fn footer_button(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Respons
     ui.add_enabled(
         enabled,
         egui::Button::new(label).min_size(Vec2::new(ui.available_width(), 30.0)),
+    )
+}
+
+fn action_button(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Response {
+    let fill = if enabled {
+        Color32::from_rgb(238, 235, 225)
+    } else {
+        Color32::from_rgb(218, 214, 205)
+    };
+    ui.add_enabled(
+        enabled,
+        egui::Button::new(
+            RichText::new(label)
+                .small()
+                .color(Color32::from_rgb(51, 57, 55)),
+        )
+        .fill(fill)
+        .min_size(Vec2::new(96.0, 28.0)),
     )
 }
 

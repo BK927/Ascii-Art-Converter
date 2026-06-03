@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 aa-core.workspace = true
+arboard.workspace = true
 eframe.workspace = true
 egui.workspace = true
 image.workspace = true

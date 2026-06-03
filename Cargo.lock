@@ -28,6 +28,7 @@ name = "aa-egui"
 version = "0.1.0"
 dependencies = [
  "aa-core",
+ "arboard",
  "eframe",
  "egui",
  "image",
