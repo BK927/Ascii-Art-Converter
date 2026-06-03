@@ -32,6 +32,6 @@ metric improvements are not strong enough to replace the stable baseline.
 
 ## Color Images
 
-The `Color edges` preset is experimental. It adds color-boundary detection to
+The `Illustration` preset is experimental. It adds color-boundary detection to
 the structure-line stage, but it still renders monochrome ASCII art. It should
 not be treated as a mature color illustration converter yet.

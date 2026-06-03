@@ -19,29 +19,29 @@ detail than the README.
 
 ## Presets
 
-### Clean Lines
+### Illustration
 
 The default GUI preset. It uses the bundled Saitamaar font, the paper-inspired
-character set, structure-line extraction, KMM/K3M-family thinning, and
-`paper-greedy` placement.
+character set, structure-line extraction with color-boundary support,
+KMM/K3M-family thinning, and `paper-greedy` placement.
+
+Best for color character illustrations. It is not a full color-ASCII renderer;
+the output remains monochrome ASCII art.
+
+### Line Art
+
+Uses the bundled Saitamaar font, the paper-inspired character set,
+structure-line extraction, KMM/K3M-family thinning, and `paper-greedy`
+placement.
 
 Best for clean black-and-white character line art.
 
-### Sensitive
+### Fine Lines
 
 A more aggressive line-art preset. It lowers edge and glyph thresholds so faint
 or thin lines are less likely to disappear. It can also pick up more noise.
 
 Best for faint sketches, thin line art, and detail-heavy monochrome images.
-
-### Color Edges
-
-An experimental preset built on top of the paper-inspired pipeline. It keeps the
-monochrome ASCII render output, but adds color-channel edge extraction before
-placement.
-
-Best for trying color illustrations where important contours are separated by
-color rather than luminance. It is not a full color-ASCII renderer.
 
 ## Output Files
 

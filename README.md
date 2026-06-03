@@ -21,26 +21,26 @@ Download the desktop app: [GitHub Releases](https://github.com/BK927/Ascii-Art-C
 - Character illustration and line-art oriented image-to-ASCII conversion.
 - Browser runner, desktop app, and command-line conversion.
 - Rendered PNG output and approximate `.txt` output.
-- Presets for clean line art, faint line art, and experimental color-edge input.
+- Presets for color illustrations, clean line art, and fine-line input.
 - Bundled font profile intended for commercial-safe use.
 
 ## Recommended Inputs
 
-The default preset is designed for clean character line art:
+The default preset is designed for character illustrations:
 
 - white or light background
-- black or dark gray line art
+- visible character contours
 - one character or character-focused crop
 - clear eyes, hair, face, and body contours
 - minimal background detail
 
 The app presets are:
 
-- `Clean lines`: default recommendation for clean black-and-white line art.
-- `Sensitive`: more aggressive line pickup for faint, thin, or detail-heavy
+- `Illustration`: default recommendation for color character illustrations. It
+  still renders monochrome ASCII art.
+- `Line Art`: clean black-and-white character line art.
+- `Fine Lines`: more aggressive line pickup for faint, thin, or detail-heavy
   line art.
-- `Color edges`: experimental color-boundary extraction for color
-  illustrations. It still renders monochrome ASCII art.
 
 Photos, heavily shaded paintings, complex backgrounds, and color-only details
 are not the primary target for this version.
@@ -66,13 +66,13 @@ Convert one image from the command line:
 cargo run -p aa-cli -- --input path\to\input.png --out target\aa-output
 ```
 
-Use the color-edge experimental preset:
+Use the color illustration preset from the CLI:
 
 ```powershell
 cargo run -p aa-cli -- --input path\to\input.png --out target\aa-color --preset color
 ```
 
-The app includes `Clean lines`, `Sensitive`, and `Color edges` presets. CLI
+The app includes `Illustration`, `Line Art`, and `Fine Lines` presets. CLI
 presets include `paper`, `color`, and `default`.
 
 The output directory contains:
@@ -85,8 +85,8 @@ The output directory contains:
 
 The desktop app exposes a few tuning controls:
 
-- `Preset`: start with `Clean lines`. Use `Sensitive` for faint or thin line
-  art, and `Color edges` for experimental color-boundary extraction.
+- `Preset`: start with `Illustration`. Use `Line Art` for clean black-and-white
+  drawings and `Fine Lines` for faint or thin strokes.
 - `Input mode`: `structure lines` extracts lines from the image.
   `binary lines` treats the input as already-clean black-and-white line art.
 - `Structure`: `ETF/FDoG-style` favors smoother, coherent contours. `Scharr`

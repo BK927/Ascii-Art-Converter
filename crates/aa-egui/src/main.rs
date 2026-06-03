@@ -92,14 +92,12 @@ impl AaApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         tune_style(&cc.egui_ctx);
 
-        let (config, font_path, profile, status) = match load_paper_config() {
-            Ok((config, path, chars)) => (
+        let (config, font_path, profile, status) = match load_color_config() {
+            Ok((config, path)) => (
                 config,
                 Some(path),
-                ProfilePreset::Paper,
-                format!(
-                    "Clean line-art preset ready: {chars} chars / target {PAPER_CHARACTER_TARGET}"
-                ),
+                ProfilePreset::ColorIllustration,
+                "Illustration preset ready.".to_owned(),
             ),
             Err(_) => {
                 let font_path = find_default_font();
@@ -184,12 +182,12 @@ impl AaApp {
                 self.font_path = Some(path);
                 self.profile = ProfilePreset::Paper;
                 self.status = format!(
-                    "Clean line-art preset ready: {} chars / target {}",
+                    "Line Art preset ready: {} chars / target {}",
                     chars, PAPER_CHARACTER_TARGET
                 );
             }
             Err(err) => {
-                self.status = format!("Clean line-art preset failed: {err}");
+                self.status = format!("Line Art preset failed: {err}");
             }
         }
     }
@@ -205,7 +203,7 @@ impl AaApp {
             self.font_path = Some(path);
         }
         self.profile = ProfilePreset::ColorIllustration;
-        self.status = "Color edge preset ready.".to_owned();
+        self.status = "Illustration preset ready.".to_owned();
     }
 
     fn apply_line_art_preset(&mut self) {
@@ -234,7 +232,7 @@ impl AaApp {
             self.font_path = Some(path);
         }
         self.profile = ProfilePreset::LineArt;
-        self.status = "Sensitive line preset ready.".to_owned();
+        self.status = "Fine Lines preset ready.".to_owned();
     }
 
     fn run_conversion(&mut self) {
@@ -449,23 +447,23 @@ impl AaApp {
 
         section_label(ui, "Preset");
         ui.horizontal_wrapped(|ui| {
-            if preset_button(ui, "Clean lines", self.profile == ProfilePreset::Paper)
+            if preset_button(
+                ui,
+                "Illustration",
+                self.profile == ProfilePreset::ColorIllustration,
+            )
+            .on_hover_text("Best starting point for color character illustrations.")
+            .clicked()
+            {
+                self.apply_color_preset();
+            }
+            if preset_button(ui, "Line Art", self.profile == ProfilePreset::Paper)
                 .on_hover_text("Best starting point for clean black-and-white character line art.")
                 .clicked()
             {
                 self.apply_paper_preset();
             }
-            if preset_button(
-                ui,
-                "Color edges",
-                self.profile == ProfilePreset::ColorIllustration,
-            )
-            .on_hover_text("Experimental color-boundary extraction for color illustrations.")
-            .clicked()
-            {
-                self.apply_color_preset();
-            }
-            if preset_button(ui, "Sensitive", self.profile == ProfilePreset::LineArt)
+            if preset_button(ui, "Fine Lines", self.profile == ProfilePreset::LineArt)
                 .on_hover_text("Picks up faint, thin, or detail-heavy line art more aggressively.")
                 .clicked()
             {
@@ -994,9 +992,9 @@ fn tune_style(ctx: &egui::Context) {
 impl ProfilePreset {
     fn label(self) -> &'static str {
         match self {
-            Self::Paper => "Clean line-art preset",
-            Self::ColorIllustration => "Color edge preset",
-            Self::LineArt => "Sensitive line preset",
+            Self::Paper => "Line Art preset",
+            Self::ColorIllustration => "Illustration preset",
+            Self::LineArt => "Fine Lines preset",
             Self::Custom => "Custom profile",
         }
     }

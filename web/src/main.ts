@@ -120,7 +120,7 @@ const timingTotal = element<HTMLElement>("timing-total");
 const statsList = element<HTMLElement>("stats-list");
 
 let sourceImage: SourceImage | null = null;
-let selectedPreset: Preset = "clean";
+let selectedPreset: Preset = "color";
 let worker: Worker | null = null;
 let activeJobId = 0;
 let busy = false;

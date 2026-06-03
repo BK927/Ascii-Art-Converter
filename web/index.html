@@ -35,9 +35,9 @@
           <section class="control-section" aria-label="Preset">
             <h2>Preset</h2>
             <div class="segmented" id="preset-group">
-              <button class="selected" type="button" data-preset="clean">Clean lines</button>
-              <button type="button" data-preset="sensitive">Sensitive</button>
-              <button type="button" data-preset="color">Color edges</button>
+              <button class="selected" type="button" data-preset="color">Illustration</button>
+              <button type="button" data-preset="clean">Line Art</button>
+              <button type="button" data-preset="sensitive">Fine Lines</button>
             </div>
           </section>
 
@@ -64,28 +64,28 @@
               <input id="blur" type="range" min="0.3" max="2.2" step="0.05" value="0.7" />
             </label>
             <label class="slider-row">
-              <span>edge <output id="edge-value">0.22</output></span>
-              <input id="edge" type="range" min="0.04" max="0.72" step="0.01" value="0.22" />
+              <span>edge <output id="edge-value">0.20</output></span>
+              <input id="edge" type="range" min="0.04" max="0.72" step="0.01" value="0.2" />
             </label>
             <label class="slider-row">
-              <span>binary <output id="binary-value">0.58</output></span>
-              <input id="binary" type="range" min="0.05" max="0.95" step="0.01" value="0.58" />
+              <span>binary <output id="binary-value">0.56</output></span>
+              <input id="binary" type="range" min="0.05" max="0.95" step="0.01" value="0.56" />
             </label>
           </section>
 
           <section class="control-section" aria-label="Glyph scoring">
             <h2>Scoring</h2>
             <label class="slider-row">
-              <span>match <output id="match-value">1.00</output></span>
-              <input id="match" type="range" min="0.1" max="2.5" step="0.05" value="1" />
+              <span>match <output id="match-value">1.05</output></span>
+              <input id="match" type="range" min="0.1" max="2.5" step="0.05" value="1.05" />
             </label>
             <label class="slider-row">
               <span>mismatch <output id="mismatch-value">0.65</output></span>
               <input id="mismatch" type="range" min="0" max="2" step="0.05" value="0.65" />
             </label>
             <label class="slider-row">
-              <span>cutoff <output id="cutoff-value">0</output></span>
-              <input id="cutoff" type="range" min="-240" max="60" step="1" value="0" />
+              <span>cutoff <output id="cutoff-value">-2</output></span>
+              <input id="cutoff" type="range" min="-240" max="60" step="1" value="-2" />
             </label>
             <label class="slider-row">
               <span>glyph ink <output id="glyph-ink-value">0.16</output></span>
