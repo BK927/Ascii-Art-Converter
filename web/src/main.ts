@@ -103,6 +103,8 @@ const fileInput = element<HTMLInputElement>("file-input");
 const dropzone = element<HTMLLabelElement>("dropzone");
 const fileMeta = element<HTMLElement>("file-meta");
 const statusEl = element<HTMLElement>("status");
+const convertingOverlay = element<HTMLElement>("converting-overlay");
+const convertingStage = element<HTMLElement>("converting-stage");
 const convertButton = element<HTMLButtonElement>("convert");
 const copyTextButton = element<HTMLButtonElement>("copy-text");
 const downloadPngButton = element<HTMLButtonElement>("download-png");
@@ -213,6 +215,9 @@ async function runConvert(): Promise<void> {
 
   busy = true;
   lastResult = null;
+  setStatus("Preparing image");
+  setConvertingStage("Preparing image");
+  setBusyVisual(true);
   updateButtons();
   const id = ++activeJobId;
   const imageRgba = new Uint8Array(sourceImage.rgba);
@@ -239,11 +244,13 @@ function handleWorkerMessage(event: MessageEvent<WorkerMessage>): void {
 
   if (event.data.type === "status") {
     setStatus(event.data.message);
+    setConvertingStage(event.data.message);
     return;
   }
 
   busy = false;
   if (event.data.type === "error") {
+    setBusyVisual(false);
     setStatus(event.data.error, true);
     updateButtons();
     return;
@@ -261,6 +268,7 @@ function handleWorkerMessage(event: MessageEvent<WorkerMessage>): void {
   asciiSize.textContent = `${lastResult.width} x ${lastResult.height}`;
   timingTotal.textContent = `${lastResult.timings.total_ms.toFixed(0)} ms`;
   renderStats(lastResult);
+  setBusyVisual(false);
   setStatus("Converted");
   updateButtons();
 }
@@ -387,6 +395,7 @@ function setCanvasEmpty(canvas: HTMLCanvasElement): void {
 
 function updateButtons(): void {
   convertButton.disabled = !sourceImage || busy;
+  convertButton.textContent = busy ? "Converting..." : "Convert";
   copyTextButton.disabled = !lastResult || busy;
   downloadPngButton.disabled = !lastResult || busy;
   downloadTxtButton.disabled = !lastResult || busy;
@@ -395,6 +404,16 @@ function updateButtons(): void {
 function setStatus(message: string, error = false): void {
   statusEl.textContent = message;
   statusEl.classList.toggle("error", error);
+}
+
+function setBusyVisual(active: boolean): void {
+  document.body.classList.toggle("is-converting", active);
+  statusEl.classList.toggle("working", active);
+  convertingOverlay.hidden = !active;
+}
+
+function setConvertingStage(message: string): void {
+  convertingStage.textContent = message;
 }
 
 function readNumber(id: string): number {

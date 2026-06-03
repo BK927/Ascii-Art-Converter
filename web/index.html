@@ -123,6 +123,20 @@
               <span id="ascii-size">-</span>
             </div>
             <canvas id="ascii-canvas"></canvas>
+            <div class="conversion-overlay" id="converting-overlay" hidden aria-live="polite">
+              <div class="conversion-card">
+                <div class="scanbox" aria-hidden="true">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </div>
+                <div class="conversion-copy">
+                  <strong>Rendering ASCII</strong>
+                  <span id="converting-stage">Preparing image</span>
+                </div>
+              </div>
+            </div>
           </article>
 
           <article class="preview-panel small">
