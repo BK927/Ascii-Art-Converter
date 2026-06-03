@@ -26,11 +26,29 @@
 
       <main class="workspace">
         <aside class="controls" aria-label="Conversion controls">
-          <label class="dropzone" id="dropzone">
+          <section class="control-section" aria-label="Mode">
+            <h2>Mode</h2>
+            <div class="segmented mode-toggle" id="mode-group">
+              <button class="selected" type="button" data-mode="single">Single</button>
+              <button type="button" data-mode="batch">Batch</button>
+            </div>
+          </section>
+
+          <label class="dropzone single-only" id="dropzone">
             <input id="file-input" type="file" accept="image/*" />
             <span class="drop-title">Open image</span>
             <span class="drop-meta" id="file-meta">No file selected</span>
           </label>
+
+          <section class="control-section batch-only" id="batch-panel" aria-label="Batch queue" hidden>
+            <input id="batch-input" type="file" accept="image/*" multiple hidden />
+            <div class="batch-actions">
+              <button id="add-batch" type="button">Add Images</button>
+              <button id="clear-batch" type="button">Clear</button>
+            </div>
+            <div class="batch-summary" id="batch-meta">No images queued</div>
+            <div class="batch-list" id="batch-list" aria-live="polite"></div>
+          </section>
 
           <section class="control-section" aria-label="Preset">
             <h2>Preset</h2>
@@ -99,10 +117,16 @@
           </section>
 
           <div class="actions">
-            <button class="primary" id="convert" type="button" disabled>Convert</button>
-            <button id="copy-text" type="button" disabled>Copy TXT</button>
-            <button id="download-png" type="button" disabled>Download PNG</button>
-            <button id="download-txt" type="button" disabled>Download TXT</button>
+            <button class="primary single-action" id="convert" type="button" disabled>Convert</button>
+            <button class="single-action" id="copy-text" type="button" disabled>Copy TXT</button>
+            <button class="single-action" id="download-png" type="button" disabled>Download PNG</button>
+            <button class="single-action" id="download-txt" type="button" disabled>Download TXT</button>
+            <button class="primary batch-action" id="convert-batch" type="button" disabled hidden>
+              Convert All
+            </button>
+            <button class="batch-action" id="download-batch" type="button" disabled hidden>
+              Download ZIP
+            </button>
           </div>
 
           <p class="privacy">Images stay in this browser session.</p>

@@ -21,6 +21,7 @@ Download the desktop app: [GitHub Releases](https://github.com/BK927/Ascii-Art-C
 - Character illustration and line-art oriented image-to-ASCII conversion.
 - Browser runner, desktop app, and command-line conversion.
 - Rendered PNG output and approximate `.txt` output.
+- Single-image tuning and batch conversion.
 - Presets for color illustrations, clean line art, and fine-line input.
 - Bundled font profile intended for commercial-safe use.
 
@@ -85,6 +86,8 @@ The output directory contains:
 
 The desktop app exposes a few tuning controls:
 
+- `Mode`: use `Single` to tune one image, or `Batch` to apply the current
+  settings to many images.
 - `Preset`: start with `Illustration`. Use `Line Art` for clean black-and-white
   drawings and `Fine Lines` for faint or thin strokes.
 - `Input mode`: `structure lines` extracts lines from the image.

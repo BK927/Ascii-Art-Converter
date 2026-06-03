@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
@@ -57,8 +58,14 @@ fn load_app_icon() -> egui::IconData {
 
 struct AaApp {
     config: AsciiConfig,
+    mode: WorkMode,
     profile: ProfilePreset,
     image_path: Option<PathBuf>,
+    batch_paths: Vec<PathBuf>,
+    batch_output_dir: Option<PathBuf>,
+    batch_pending: Option<Receiver<BatchMessage>>,
+    batch_done: usize,
+    batch_failed: usize,
     font_path: Option<PathBuf>,
     result: Option<AsciiResult>,
     pending: Option<Receiver<Result<AsciiResult, String>>>,
@@ -86,6 +93,26 @@ enum ProfilePreset {
     ColorIllustration,
     LineArt,
     Custom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkMode {
+    Single,
+    Batch,
+}
+
+enum BatchMessage {
+    ItemDone {
+        index: usize,
+        total: usize,
+        path: PathBuf,
+        result: Result<AsciiResult, String>,
+    },
+    Finished {
+        converted: usize,
+        failed: usize,
+        output_dir: PathBuf,
+    },
 }
 
 impl AaApp {
@@ -116,8 +143,14 @@ impl AaApp {
 
         Self {
             config,
+            mode: WorkMode::Single,
             profile,
             image_path: None,
+            batch_paths: Vec::new(),
+            batch_output_dir: None,
+            batch_pending: None,
+            batch_done: 0,
+            batch_failed: 0,
             font_path,
             result: None,
             pending: None,
@@ -160,6 +193,62 @@ impl AaApp {
         };
 
         self.open_image_path(ctx, path);
+    }
+
+    fn add_batch_images(&mut self) {
+        let Some(paths) = rfd::FileDialog::new()
+            .add_filter(
+                "Images",
+                &["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"],
+            )
+            .pick_files()
+        else {
+            return;
+        };
+
+        self.add_batch_paths(paths);
+    }
+
+    fn add_batch_folder(&mut self) {
+        let Some(folder) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
+
+        let paths = collect_folder_images(&folder);
+        if paths.is_empty() {
+            self.status = format!("No supported images in {}", compact_path(&folder));
+            return;
+        }
+
+        self.add_batch_paths(paths);
+    }
+
+    fn choose_batch_output(&mut self) {
+        let Some(path) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
+
+        self.batch_output_dir = Some(path.clone());
+        self.status = format!("Batch output: {}", compact_path(&path));
+    }
+
+    fn add_batch_paths(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        let before = self.batch_paths.len();
+        for path in paths {
+            if !is_supported_image(&path)
+                || self.batch_paths.iter().any(|existing| existing == &path)
+            {
+                continue;
+            }
+            self.batch_paths.push(path);
+        }
+
+        let added = self.batch_paths.len().saturating_sub(before);
+        self.status = format!(
+            "Batch queue: {} image(s){}",
+            self.batch_paths.len(),
+            if added == 0 { "" } else { " ready" }
+        );
     }
 
     fn open_font(&mut self) {
@@ -236,7 +325,7 @@ impl AaApp {
     }
 
     fn run_conversion(&mut self) {
-        if self.pending.is_some() {
+        if self.is_busy() {
             return;
         }
 
@@ -261,6 +350,72 @@ impl AaApp {
 
         self.pending = Some(receiver);
         self.status = "Converting...".to_owned();
+    }
+
+    fn run_batch_conversion(&mut self) {
+        if self.is_busy() {
+            return;
+        }
+
+        if self.batch_paths.is_empty() {
+            self.status = "Add images to the batch first.".to_owned();
+            return;
+        }
+
+        let Some(font_path) = self.font_path.clone() else {
+            self.status = "Select a font first.".to_owned();
+            return;
+        };
+
+        if self.batch_output_dir.is_none() {
+            self.choose_batch_output();
+        }
+
+        let Some(output_dir) = self.batch_output_dir.clone() else {
+            return;
+        };
+
+        let paths = self.batch_paths.clone();
+        let config = self.config.clone();
+        let (sender, receiver) = mpsc::channel();
+
+        thread::spawn(move || {
+            let total = paths.len();
+            let mut converted = 0;
+            let mut failed = 0;
+
+            for (index, path) in paths.into_iter().enumerate() {
+                let result =
+                    convert_and_save_batch_item(&path, &font_path, &config, &output_dir, index);
+                if result.is_ok() {
+                    converted += 1;
+                } else {
+                    failed += 1;
+                }
+
+                let _ = sender.send(BatchMessage::ItemDone {
+                    index,
+                    total,
+                    path,
+                    result,
+                });
+            }
+
+            let _ = sender.send(BatchMessage::Finished {
+                converted,
+                failed,
+                output_dir,
+            });
+        });
+
+        self.batch_done = 0;
+        self.batch_failed = 0;
+        self.batch_pending = Some(receiver);
+        self.status = format!("Batch converting 0/{}", self.batch_paths.len());
+    }
+
+    fn is_busy(&self) -> bool {
+        self.pending.is_some() || self.batch_pending.is_some()
     }
 
     fn poll_conversion(&mut self, ctx: &egui::Context) {
@@ -307,8 +462,85 @@ impl AaApp {
         }
     }
 
+    fn poll_batch_conversion(&mut self, ctx: &egui::Context) {
+        let Some(receiver) = self.batch_pending.take() else {
+            return;
+        };
+
+        loop {
+            match receiver.try_recv() {
+                Ok(BatchMessage::ItemDone {
+                    index,
+                    total,
+                    path,
+                    result,
+                }) => match result {
+                    Ok(result) => {
+                        self.batch_done += 1;
+                        if let Ok(texture) = load_texture_from_path(ctx, &path, "batch-original") {
+                            self.original_texture = Some(texture);
+                        }
+                        self.line_texture = Some(load_texture_from_rgba(
+                            ctx,
+                            &result.line_preview,
+                            "batch-structure-lines",
+                        ));
+                        self.orientation_texture = Some(load_texture_from_rgba(
+                            ctx,
+                            &result.orientation_preview,
+                            "batch-orientation-preview",
+                        ));
+                        self.ascii_texture = Some(load_texture_from_rgba(
+                            ctx,
+                            &result.ascii_preview,
+                            "batch-ascii-preview",
+                        ));
+                        self.image_path = Some(path.clone());
+                        self.result = Some(result);
+                        self.preview_tab = PreviewTab::Compare;
+                        self.status = format!(
+                            "Batch converting {}/{}: saved {}",
+                            index + 1,
+                            total,
+                            compact_path(&path)
+                        );
+                    }
+                    Err(err) => {
+                        self.batch_failed += 1;
+                        self.status = format!("Batch error {}/{}: {}", index + 1, total, err);
+                    }
+                },
+                Ok(BatchMessage::Finished {
+                    converted,
+                    failed,
+                    output_dir,
+                }) => {
+                    self.status = format!(
+                        "Batch complete: {converted} saved, {failed} failed -> {}",
+                        compact_path(&output_dir)
+                    );
+                    break;
+                }
+                Err(TryRecvError::Empty) => {
+                    self.batch_pending = Some(receiver);
+                    ctx.request_repaint_after(Duration::from_millis(120));
+                    break;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.status = "Batch worker stopped unexpectedly.".to_owned();
+                    break;
+                }
+            }
+        }
+    }
+
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
         let dropped_files = ctx.input(|input| input.raw.dropped_files.clone());
+        if self.mode == WorkMode::Batch {
+            self.add_batch_paths(dropped_files.into_iter().filter_map(|file| file.path));
+            return;
+        }
+
         for file in dropped_files {
             let Some(path) = file.path else {
                 continue;
@@ -427,23 +659,27 @@ impl AaApp {
                 .color(SIDEBAR_MUTED),
         );
 
-        ui.add_space(16.0);
-        ui.columns(2, |columns| {
-            let open_width = columns[0].available_width();
-            if columns[0]
-                .add_sized([open_width, 34.0], egui::Button::new("Open Image"))
+        section_label(ui, "Mode");
+        ui.horizontal_wrapped(|ui| {
+            if mode_button(ui, "Single", self.mode == WorkMode::Single)
+                .on_hover_text("Tune and convert one image.")
                 .clicked()
             {
-                self.open_image(ctx);
+                self.mode = WorkMode::Single;
             }
-            let font_width = columns[1].available_width();
-            if columns[1]
-                .add_sized([font_width, 34.0], egui::Button::new("Select Font"))
+            if mode_button(ui, "Batch", self.mode == WorkMode::Batch)
+                .on_hover_text("Apply the current settings to many images.")
                 .clicked()
             {
-                self.open_font();
+                self.mode = WorkMode::Batch;
             }
         });
+
+        ui.add_space(10.0);
+        match self.mode {
+            WorkMode::Single => self.single_source_controls(ctx, ui),
+            WorkMode::Batch => self.batch_source_controls(ui),
+        }
 
         section_label(ui, "Preset");
         ui.horizontal_wrapped(|ui| {
@@ -472,7 +708,11 @@ impl AaApp {
         });
 
         ui.add_space(10.0);
-        path_line(ui, "Image", self.image_path.as_deref());
+        if self.mode == WorkMode::Single {
+            path_line(ui, "Image", self.image_path.as_deref());
+        } else {
+            path_line(ui, "Output", self.batch_output_dir.as_deref());
+        }
         path_line(ui, "Font", self.font_path.as_deref());
 
         section_label(ui, "Pipeline");
@@ -703,9 +943,120 @@ impl AaApp {
         }
     }
 
+    fn single_source_controls(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        ui.columns(2, |columns| {
+            let open_width = columns[0].available_width();
+            if columns[0]
+                .add_sized([open_width, 34.0], egui::Button::new("Open Image"))
+                .clicked()
+            {
+                self.open_image(ctx);
+            }
+            let font_width = columns[1].available_width();
+            if columns[1]
+                .add_sized([font_width, 34.0], egui::Button::new("Select Font"))
+                .clicked()
+            {
+                self.open_font();
+            }
+        });
+    }
+
+    fn batch_source_controls(&mut self, ui: &mut egui::Ui) {
+        ui.columns(2, |columns| {
+            let add_width = columns[0].available_width();
+            if columns[0]
+                .add_sized([add_width, 34.0], egui::Button::new("Add Images"))
+                .clicked()
+            {
+                self.add_batch_images();
+            }
+            let folder_width = columns[1].available_width();
+            if columns[1]
+                .add_sized([folder_width, 34.0], egui::Button::new("Add Folder"))
+                .clicked()
+            {
+                self.add_batch_folder();
+            }
+        });
+
+        ui.columns(2, |columns| {
+            let output_width = columns[0].available_width();
+            if columns[0]
+                .add_sized([output_width, 34.0], egui::Button::new("Output Folder"))
+                .clicked()
+            {
+                self.choose_batch_output();
+            }
+            let font_width = columns[1].available_width();
+            if columns[1]
+                .add_sized([font_width, 34.0], egui::Button::new("Select Font"))
+                .clicked()
+            {
+                self.open_font();
+            }
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(format!("{} image(s) queued", self.batch_paths.len()))
+                    .small()
+                    .color(SIDEBAR_MUTED),
+            );
+            if ui
+                .add_enabled(
+                    !self.is_busy() && !self.batch_paths.is_empty(),
+                    egui::Button::new("Clear"),
+                )
+                .clicked()
+            {
+                self.batch_paths.clear();
+                self.batch_done = 0;
+                self.batch_failed = 0;
+                self.status = "Batch queue cleared.".to_owned();
+            }
+        });
+
+        if !self.batch_paths.is_empty() {
+            Frame::new()
+                .fill(Color32::from_rgb(31, 36, 36))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(48, 55, 55)))
+                .inner_margin(Margin::same(8))
+                .show(ui, |ui| {
+                    ScrollArea::vertical()
+                        .id_salt("batch-list")
+                        .max_height(116.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            for (index, path) in self.batch_paths.iter().take(80).enumerate() {
+                                ui.label(
+                                    RichText::new(format!("{:02}. {}", index + 1, file_name(path)))
+                                        .small()
+                                        .color(SIDEBAR_TEXT),
+                                );
+                            }
+                            if self.batch_paths.len() > 80 {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "...and {} more",
+                                        self.batch_paths.len() - 80
+                                    ))
+                                    .small()
+                                    .color(SIDEBAR_MUTED),
+                                );
+                            }
+                        });
+                });
+        }
+    }
+
     fn sidebar_footer(&mut self, ui: &mut egui::Ui) {
-        let running = self.pending.is_some();
+        let running = self.is_busy();
         let can_export = self.result.is_some();
+        let can_start = match self.mode {
+            WorkMode::Single => self.image_path.is_some(),
+            WorkMode::Batch => !self.batch_paths.is_empty(),
+        };
 
         Frame::new()
             .fill(SIDEBAR_PANEL)
@@ -723,15 +1074,25 @@ impl AaApp {
                 } else {
                     ACCENT
                 };
+                let idle_label = match self.mode {
+                    WorkMode::Single => "Convert",
+                    WorkMode::Batch => "Convert All",
+                };
                 let convert_button = egui::Button::new(
-                    RichText::new(if running { "Converting..." } else { "Convert" })
+                    RichText::new(if running { "Converting..." } else { idle_label })
                         .strong()
                         .color(Color32::WHITE),
                 )
                 .fill(convert_fill)
                 .min_size(Vec2::new(ui.available_width(), 40.0));
-                if ui.add_enabled(!running, convert_button).clicked() {
-                    self.run_conversion();
+                if ui
+                    .add_enabled(!running && can_start, convert_button)
+                    .clicked()
+                {
+                    match self.mode {
+                        WorkMode::Single => self.run_conversion(),
+                        WorkMode::Batch => self.run_batch_conversion(),
+                    }
                 }
 
                 ui.add_space(6.0);
@@ -770,12 +1131,20 @@ impl AaApp {
 
         self.preview_actions(ui);
 
-        if self.pending.is_some() {
+        if self.is_busy() {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.spinner();
+                let message = if self.batch_pending.is_some() {
+                    format!(
+                        "Batch converting... {} saved, {} failed",
+                        self.batch_done, self.batch_failed
+                    )
+                } else {
+                    "Converting image...".to_owned()
+                };
                 ui.label(
-                    RichText::new("Converting image...")
+                    RichText::new(message)
                         .small()
                         .color(Color32::from_rgb(92, 98, 88)),
                 );
@@ -960,6 +1329,7 @@ impl eframe::App for AaApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_dropped_files(ctx);
         self.poll_conversion(ctx);
+        self.poll_batch_conversion(ctx);
 
         egui::SidePanel::left("controls")
             .resizable(false)
@@ -1020,6 +1390,61 @@ fn load_color_config() -> Result<(AsciiConfig, PathBuf), String> {
     Ok((config, path))
 }
 
+fn convert_and_save_batch_item(
+    image_path: &Path,
+    font_path: &Path,
+    config: &AsciiConfig,
+    output_dir: &Path,
+    index: usize,
+) -> Result<AsciiResult, String> {
+    let result = aa_core::convert_path(image_path, font_path, config)
+        .map_err(|err| format!("{}: {err}", compact_path(image_path)))?;
+    fs::create_dir_all(output_dir).map_err(|err| err.to_string())?;
+
+    let prefix = format!("{:03}-{}", index + 1, safe_file_stem(image_path));
+    save_ascii_png(&result, output_dir.join(format!("{prefix}-ascii.png")))
+        .map_err(|err| err.to_string())?;
+    save_ascii_text(&result, output_dir.join(format!("{prefix}-ascii.txt")))
+        .map_err(|err| err.to_string())?;
+
+    Ok(result)
+}
+
+fn collect_folder_images(folder: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return Vec::new();
+    };
+
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| is_supported_image(path))
+        .collect();
+    paths.sort();
+    paths
+}
+
+fn safe_file_stem(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("image");
+    let sanitized: String = stem
+        .chars()
+        .map(|ch| match ch {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            ch if ch.is_control() => '_',
+            ch => ch,
+        })
+        .collect();
+    let trimmed = sanitized.trim();
+    if trimmed.is_empty() {
+        "image".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
 fn preset_button(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
     let fill = if selected {
         ACCENT
@@ -1027,6 +1452,10 @@ fn preset_button(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Respon
         Color32::from_rgb(45, 49, 52)
     };
     ui.add(egui::Button::new(label).fill(fill))
+}
+
+fn mode_button(ui: &mut egui::Ui, label: &str, selected: bool) -> egui::Response {
+    preset_button(ui, label, selected)
 }
 
 fn footer_button(ui: &mut egui::Ui, enabled: bool, label: &str) -> egui::Response {
@@ -1296,4 +1725,11 @@ fn compact_path(path: &Path) -> String {
         Some(parent) => format!("{parent}/{file_name}"),
         None => file_name.to_owned(),
     }
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("unknown")
+        .to_owned()
 }

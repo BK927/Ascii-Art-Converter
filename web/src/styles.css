@@ -168,6 +168,10 @@ button:disabled {
   font-size: 12px;
 }
 
+.mode-toggle {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .control-section {
   display: grid;
   gap: 10px;
@@ -197,6 +201,77 @@ button:disabled {
   color: #ffffff;
   border-color: var(--teal-dark);
   background: var(--teal);
+}
+
+.batch-actions {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.batch-summary {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.batch-list {
+  display: grid;
+  gap: 6px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.batch-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid #e3e8ea;
+  border-radius: 6px;
+  background: #fbfcfc;
+}
+
+.batch-item button {
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+}
+
+.batch-item button:disabled {
+  color: inherit;
+  background: transparent;
+}
+
+.batch-state {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-transform: uppercase;
+}
+
+.batch-item.running {
+  border-color: rgba(0, 127, 130, 0.35);
+  background: rgba(0, 127, 130, 0.06);
+}
+
+.batch-item.done .batch-state {
+  color: var(--teal-dark);
+}
+
+.batch-item.error {
+  border-color: rgba(199, 67, 50, 0.34);
+}
+
+.batch-item.error .batch-state {
+  color: var(--red);
 }
 
 .slider-row {
