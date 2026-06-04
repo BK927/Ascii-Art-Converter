@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use aa_core::benchmark::{BenchmarkAlgorithm, BenchmarkRunOptions, run_benchmark};
 use aa_core::{
-    AsciiConfig, InputMode, color_illustration_preset, find_default_font, find_paper_font,
-    paper_preset, save_stage_bundle,
+    AsciiConfig, InputMode, anime_sketch_paper_preset, color_illustration_preset,
+    find_default_font, find_paper_font, paper_preset, save_stage_bundle, soft_grid_preset,
 };
 
 fn main() {
@@ -62,12 +62,17 @@ fn run_convert(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     let mut config = match preset.as_str() {
         "paper" => paper_preset(&font_bytes).map_err(|err| err.to_string())?,
         "color" => color_illustration_preset(&font_bytes).map_err(|err| err.to_string())?,
+        "ai-sketch" | "anime-sketch" => {
+            anime_sketch_paper_preset(&font_bytes).map_err(|err| err.to_string())?
+        }
+        "soft-grid" | "b2" => soft_grid_preset(&font_bytes).map_err(|err| err.to_string())?,
         "default" => AsciiConfig::default(),
         other => return Err(format!("unknown preset: {other}")),
     };
     if let Some(input_mode) = input_mode {
         config.input_mode = match input_mode.as_str() {
             "binary" => InputMode::TreatAsBinaryLines,
+            "soft" => InputMode::TreatAsSoftLines,
             "structure" => InputMode::ExtractStructureLines,
             other => return Err(format!("unknown input mode: {other}")),
         };
@@ -155,14 +160,14 @@ fn run_bench(args: &[String]) -> Result<(), String> {
 
 fn print_help() {
     println!(
-        "aa-cli --input <image> --out <directory> [--font <ttf/otf>] [--preset paper|color|default] [--input-mode structure|binary] [--binary-threshold N] [--edge-threshold N] [--score-cutoff N]\n\
-         aa-cli bench run --manifest <manifest.json> --out <directory> [--font-profile saitamaar-16|noto-commercial-16|custom] [--font <ttf/otf>] [--font-license <txt>] [--algorithms density-grid,fixed-grid,left-to-right,paper-greedy,paper-greedy-kang,paper-greedy-kmm,paper-greedy-kang-kmm,paper-greedy-clean,paper-greedy-balanced,paper-greedy-pretty,paper-greedy-interval,paper-greedy-interval-clean,paper-greedy-interval-balanced,paper-greedy-postprune,paper-greedy-local-prune,ours-current]"
+        "aa-cli --input <image> --out <directory> [--font <ttf/otf>] [--preset paper|color|ai-sketch|soft-grid|default] [--input-mode structure|binary|soft] [--binary-threshold N] [--edge-threshold N] [--score-cutoff N]\n\
+         aa-cli bench run --manifest <manifest.json> --out <directory> [--font-profile saitamaar-16|noto-commercial-16|custom] [--font <ttf/otf>] [--font-license <txt>] [--algorithms density-grid,fixed-grid,left-to-right,paper-greedy,paper-greedy-kang,paper-greedy-kmm,paper-greedy-kang-kmm,paper-greedy-clean,paper-greedy-balanced,paper-greedy-pretty,paper-greedy-interval,paper-greedy-interval-clean,paper-greedy-interval-balanced,paper-greedy-postprune,paper-greedy-local-prune,illustration-current,illustration-density,illustration-density-prune,ours-current]"
     );
 }
 
 fn print_bench_help() {
     println!(
-        "aa-cli bench run --manifest <manifest.json> --out <directory> [--font-profile saitamaar-16|noto-commercial-16|custom] [--font <ttf/otf>] [--font-license <txt>] [--algorithms density-grid,fixed-grid,left-to-right,paper-greedy,paper-greedy-kang,paper-greedy-kmm,paper-greedy-kang-kmm,paper-greedy-clean,paper-greedy-balanced,paper-greedy-pretty,paper-greedy-interval,paper-greedy-interval-clean,paper-greedy-interval-balanced,paper-greedy-postprune,paper-greedy-local-prune,ours-current]\n\
+        "aa-cli bench run --manifest <manifest.json> --out <directory> [--font-profile saitamaar-16|noto-commercial-16|custom] [--font <ttf/otf>] [--font-license <txt>] [--algorithms density-grid,fixed-grid,left-to-right,paper-greedy,paper-greedy-kang,paper-greedy-kmm,paper-greedy-kang-kmm,paper-greedy-clean,paper-greedy-balanced,paper-greedy-pretty,paper-greedy-interval,paper-greedy-interval-clean,paper-greedy-interval-balanced,paper-greedy-postprune,paper-greedy-local-prune,illustration-current,illustration-density,illustration-density-prune,ours-current]\n\
          default algorithms: left-to-right,paper-greedy"
     );
 }

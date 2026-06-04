@@ -1,6 +1,6 @@
 import initWasm, { convert_rgba } from "../pkg/aa_wasm.js";
 
-type Preset = "clean" | "sensitive" | "color";
+type Preset = "clean" | "sensitive" | "color" | "soft" | "ai-sketch";
 
 interface ConvertOptions {
   max_width: number;

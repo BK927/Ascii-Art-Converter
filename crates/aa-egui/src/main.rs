@@ -9,8 +9,9 @@ use std::time::Duration;
 
 use aa_core::{
     AsciiConfig, AsciiResult, InputMode, PAPER_CHARACTER_TARGET, PlacementMode, StructureLineMode,
-    ThinningMode, color_illustration_preset, find_default_font, find_paper_font, paper_preset,
-    save_ascii_png, save_ascii_text, save_stage_bundle,
+    ThinningMode, anime_sketch_paper_preset, color_illustration_preset, find_default_font,
+    find_paper_font, paper_preset, save_ascii_png, save_ascii_text, save_stage_bundle,
+    soft_grid_preset,
 };
 use arboard::{Clipboard, ImageData};
 use eframe::egui::{
@@ -94,6 +95,8 @@ enum ProfilePreset {
     Paper,
     ColorIllustration,
     LineArt,
+    SoftGrid,
+    AiSketch,
     Custom,
 }
 
@@ -324,6 +327,34 @@ impl AaApp {
         }
         self.profile = ProfilePreset::LineArt;
         self.status = "Fine Lines preset ready.".to_owned();
+    }
+
+    fn apply_soft_grid_preset(&mut self) {
+        let (config, path) = match load_soft_grid_config() {
+            Ok((config, path)) => (config, Some(path)),
+            Err(_) => (self.config.clone(), self.font_path.clone()),
+        };
+
+        self.config = config;
+        if let Some(path) = path {
+            self.font_path = Some(path);
+        }
+        self.profile = ProfilePreset::SoftGrid;
+        self.status = "B2 Soft Grid preset ready.".to_owned();
+    }
+
+    fn apply_ai_sketch_preset(&mut self) {
+        let (config, path) = match load_ai_sketch_config() {
+            Ok((config, path)) => (config, Some(path)),
+            Err(_) => (self.config.clone(), self.font_path.clone()),
+        };
+
+        self.config = config;
+        if let Some(path) = path {
+            self.font_path = Some(path);
+        }
+        self.profile = ProfilePreset::AiSketch;
+        self.status = "AI Sketch Lines preset ready.".to_owned();
     }
 
     fn run_conversion(&mut self) {
@@ -707,6 +738,22 @@ impl AaApp {
             {
                 self.apply_line_art_preset();
             }
+            if preset_button(ui, "B2 Soft Grid", self.profile == ProfilePreset::SoftGrid)
+                .on_hover_text(
+                    "Original B2 soft map + 8x16 grid matcher for AI/soft line-art input.",
+                )
+                .clicked()
+            {
+                self.apply_soft_grid_preset();
+            }
+            if preset_button(ui, "AI Sketch Lines", self.profile == ProfilePreset::AiSketch)
+                .on_hover_text(
+                    "For AI-extracted line art: convert to 1px binary lines, then use paper-greedy placement.",
+                )
+                .clicked()
+            {
+                self.apply_ai_sketch_preset();
+            }
         });
 
         ui.add_space(10.0);
@@ -723,6 +770,7 @@ impl AaApp {
             .selected_text(match self.config.input_mode {
                 InputMode::ExtractStructureLines => "structure lines",
                 InputMode::TreatAsBinaryLines => "binary lines",
+                InputMode::TreatAsSoftLines => "soft lines",
             })
             .show_ui(ui, |ui| {
                 if ui
@@ -745,10 +793,20 @@ impl AaApp {
                 {
                     self.profile = ProfilePreset::Custom;
                 }
+                if ui
+                    .selectable_value(
+                        &mut self.config.input_mode,
+                        InputMode::TreatAsSoftLines,
+                        "soft lines",
+                    )
+                    .changed()
+                {
+                    self.profile = ProfilePreset::Custom;
+                }
             })
             .response
             .on_hover_text(
-                "Choose whether the app should extract structure lines or treat the image as already-clean line art.",
+                "Choose whether the app should extract structure lines, threshold a line-art image, or preserve soft sketch darkness.",
             );
 
         ComboBox::from_id_salt("structure-mode")
@@ -818,6 +876,7 @@ impl AaApp {
             .selected_text(match self.config.placement_mode {
                 PlacementMode::PaperGreedy => "paper greedy",
                 PlacementMode::LeftToRight => "left to right",
+                PlacementMode::SoftGrid => "soft grid",
             })
             .show_ui(ui, |ui| {
                 if ui
@@ -840,9 +899,19 @@ impl AaApp {
                 {
                     self.profile = ProfilePreset::Custom;
                 }
+                if ui
+                    .selectable_value(
+                        &mut self.config.placement_mode,
+                        PlacementMode::SoftGrid,
+                        "soft grid",
+                    )
+                    .changed()
+                {
+                    self.profile = ProfilePreset::Custom;
+                }
             })
             .response
-            .on_hover_text("paper greedy is the recommended placement mode; left to right is mainly a comparison baseline.");
+            .on_hover_text("paper greedy follows the paper-inspired recursive placement; soft grid is the B2-style sketch matcher; left to right is mainly a comparison baseline.");
 
         section_label(ui, "Geometry");
         if u32_slider(
@@ -892,7 +961,6 @@ impl AaApp {
         {
             self.profile = ProfilePreset::Custom;
         }
-
         section_label(ui, "Scoring");
         if f32_slider(ui, &mut self.config.mismatch_weight, 0.0..=2.0, "mismatch")
             .on_hover_text("Penalty for glyph ink that does not match the extracted line image.")
@@ -1367,6 +1435,8 @@ impl ProfilePreset {
             Self::Paper => "Line Art preset",
             Self::ColorIllustration => "Illustration preset",
             Self::LineArt => "Fine Lines preset",
+            Self::SoftGrid => "B2 Soft Grid preset",
+            Self::AiSketch => "AI Sketch Lines preset",
             Self::Custom => "Custom profile",
         }
     }
@@ -1389,6 +1459,20 @@ fn load_color_config() -> Result<(AsciiConfig, PathBuf), String> {
     let path = find_paper_font().ok_or_else(|| "Saitamaar font asset was not found.".to_owned())?;
     let bytes = std::fs::read(&path).map_err(|err| err.to_string())?;
     let config = color_illustration_preset(&bytes).map_err(|err| err.to_string())?;
+    Ok((config, path))
+}
+
+fn load_soft_grid_config() -> Result<(AsciiConfig, PathBuf), String> {
+    let path = find_paper_font().ok_or_else(|| "Saitamaar font asset was not found.".to_owned())?;
+    let bytes = std::fs::read(&path).map_err(|err| err.to_string())?;
+    let config = soft_grid_preset(&bytes).map_err(|err| err.to_string())?;
+    Ok((config, path))
+}
+
+fn load_ai_sketch_config() -> Result<(AsciiConfig, PathBuf), String> {
+    let path = find_paper_font().ok_or_else(|| "Saitamaar font asset was not found.".to_owned())?;
+    let bytes = std::fs::read(&path).map_err(|err| err.to_string())?;
+    let config = anime_sketch_paper_preset(&bytes).map_err(|err| err.to_string())?;
     Ok((config, path))
 }
 

@@ -1,6 +1,7 @@
 use aa_core::{
     AsciiConfig, AsciiResult, InputMode, PlacementMode, StructureLineMode, ThinningMode,
-    color_illustration_preset, convert_image, paper_preset,
+    anime_sketch_paper_preset, color_illustration_preset, convert_image, paper_preset,
+    soft_grid_preset,
 };
 use image::{DynamicImage, RgbaImage};
 use serde::{Deserialize, Serialize};
@@ -85,7 +86,7 @@ pub fn convert_rgba(
 
     let options = parse_options(options)?;
     let mut config = config_for_preset(preset, font_bytes).map_err(to_js_error)?;
-    apply_web_defaults(&mut config);
+    apply_web_defaults(&mut config, preset);
     apply_options(&mut config, options);
 
     let rgba = RgbaImage::from_raw(image_width, image_height, image_rgba.to_vec())
@@ -125,12 +126,16 @@ fn config_for_preset(preset: &str, font_bytes: &[u8]) -> Result<AsciiConfig, aa_
             Ok(config)
         }
         "color" => color_illustration_preset(font_bytes),
+        "soft" | "soft-grid" | "b2" => soft_grid_preset(font_bytes),
+        "ai-sketch" | "anime-sketch" => anime_sketch_paper_preset(font_bytes),
         _ => paper_preset(font_bytes),
     }
 }
 
-fn apply_web_defaults(config: &mut AsciiConfig) {
-    config.max_input_width = 512;
+fn apply_web_defaults(config: &mut AsciiConfig, preset: &str) {
+    if !matches!(preset, "soft" | "soft-grid" | "b2") {
+        config.max_input_width = 512;
+    }
 }
 
 fn apply_options(config: &mut AsciiConfig, options: ConvertOptions) {

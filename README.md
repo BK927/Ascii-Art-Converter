@@ -4,7 +4,7 @@ A Rust-based image-to-ASCII-art converter focused on anime/character
 illustrations, line art, and commercial-safe font choices.
 
 <p align="center">
-  <img src="docs/images/readme-demo.png" alt="AA Converter demo: original character line art converted into rendered ASCII art" width="900">
+  <img src="docs/images/readme-demo.png" alt="AA Converter demo: face-cropped character illustration converted into rendered ASCII art" width="900">
 </p>
 
 AA Converter turns input images into rendered ASCII-art PNGs and approximate

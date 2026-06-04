@@ -52,6 +52,9 @@ pub enum BenchmarkAlgorithm {
     PaperGreedyIntervalBalanced,
     PaperGreedyPostPrune,
     PaperGreedyLocalPrune,
+    IllustrationCurrent,
+    IllustrationDensity,
+    IllustrationDensityPrune,
     OursCurrent,
 }
 
@@ -77,6 +80,9 @@ impl BenchmarkAlgorithm {
             Self::PaperGreedyIntervalBalanced,
             Self::PaperGreedyPostPrune,
             Self::PaperGreedyLocalPrune,
+            Self::IllustrationCurrent,
+            Self::IllustrationDensity,
+            Self::IllustrationDensityPrune,
             Self::OursCurrent,
         ]
     }
@@ -98,6 +104,9 @@ impl BenchmarkAlgorithm {
             Self::PaperGreedyIntervalBalanced => "paper-greedy-interval-balanced",
             Self::PaperGreedyPostPrune => "paper-greedy-postprune",
             Self::PaperGreedyLocalPrune => "paper-greedy-local-prune",
+            Self::IllustrationCurrent => "illustration-current",
+            Self::IllustrationDensity => "illustration-density",
+            Self::IllustrationDensityPrune => "illustration-density-prune",
             Self::OursCurrent => "ours-current",
         }
     }
@@ -123,6 +132,9 @@ impl FromStr for BenchmarkAlgorithm {
             "paper-greedy-interval-balanced" => Ok(Self::PaperGreedyIntervalBalanced),
             "paper-greedy-postprune" => Ok(Self::PaperGreedyPostPrune),
             "paper-greedy-local-prune" => Ok(Self::PaperGreedyLocalPrune),
+            "illustration-current" => Ok(Self::IllustrationCurrent),
+            "illustration-density" => Ok(Self::IllustrationDensity),
+            "illustration-density-prune" => Ok(Self::IllustrationDensityPrune),
             "ours-current" => Ok(Self::OursCurrent),
             other => Err(format!("unknown benchmark algorithm: {other}")),
         }
@@ -628,12 +640,43 @@ fn convert_for_algorithm(
             let result = convert_image(image, font_bytes, &config)?;
             post_prune_result(result, font_bytes, &config, PruneMode::LocalSearch)
         }
+        BenchmarkAlgorithm::IllustrationCurrent => {
+            let mut config = illustration_benchmark_config(font_bytes, base_config)?;
+            config.placement_mode = PlacementMode::PaperGreedy;
+            convert_image(image, font_bytes, &config)
+        }
+        BenchmarkAlgorithm::IllustrationDensity => {
+            let mut config = illustration_benchmark_config(font_bytes, base_config)?;
+            config.placement_mode = PlacementMode::PaperGreedy;
+            config.target_edge_density = 0.09;
+            convert_image(image, font_bytes, &config)
+        }
+        BenchmarkAlgorithm::IllustrationDensityPrune => {
+            let mut config = illustration_benchmark_config(font_bytes, base_config)?;
+            config.placement_mode = PlacementMode::PaperGreedy;
+            config.target_edge_density = 0.075;
+            config.min_component_pixels = 6;
+            config.short_branch_prune_px = 2;
+            config.mismatch_weight = (config.mismatch_weight * 1.05).max(0.7);
+            convert_image(image, font_bytes, &config)
+        }
         BenchmarkAlgorithm::OursCurrent => {
             let mut config = base_config.clone();
             config.placement_mode = PlacementMode::PaperGreedy;
             convert_image(image, font_bytes, &config)
         }
     }
+}
+
+fn illustration_benchmark_config(
+    font_bytes: &[u8],
+    base_config: &AsciiConfig,
+) -> Result<AsciiConfig, AaError> {
+    let mut config = color_illustration_preset(font_bytes)?;
+    config.max_input_width = base_config.max_input_width;
+    config.font_px = base_config.font_px;
+    config.stripe_stride_px = base_config.stripe_stride_px;
+    Ok(config)
 }
 
 fn apply_kang_fdog_profile(config: &mut AsciiConfig) {

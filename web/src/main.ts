@@ -1,7 +1,7 @@
 import "./styles.css";
 
 type AppMode = "single" | "batch";
-type Preset = "clean" | "sensitive" | "color";
+type Preset = "clean" | "sensitive" | "color" | "soft" | "ai-sketch";
 type BatchStatus = "queued" | "running" | "done" | "error";
 
 interface SourceImage {
@@ -99,6 +99,30 @@ const presetDefaults: Record<Preset, Record<string, string>> = {
     match: "1.05",
     mismatch: "0.65",
     cutoff: "-2",
+    "glyph-ink": "0.16",
+  },
+  soft: {
+    "max-width": "384",
+    "font-px": "16",
+    "stripe-px": "16",
+    blur: "0.65",
+    edge: "0.2",
+    binary: "0.58",
+    match: "1",
+    mismatch: "0.65",
+    cutoff: "0",
+    "glyph-ink": "0.14",
+  },
+  "ai-sketch": {
+    "max-width": "512",
+    "font-px": "16",
+    "stripe-px": "16",
+    blur: "0.7",
+    edge: "0.2",
+    binary: "0.72",
+    match: "1",
+    mismatch: "0.65",
+    cutoff: "0",
     "glyph-ink": "0.16",
   },
 };

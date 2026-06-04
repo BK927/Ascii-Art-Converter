@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::f32::consts::PI;
 use std::path::{Path, PathBuf};
 
@@ -35,6 +35,7 @@ pub enum AaError {
 pub enum PlacementMode {
     PaperGreedy,
     LeftToRight,
+    SoftGrid,
 }
 
 impl Default for PlacementMode {
@@ -47,6 +48,7 @@ impl Default for PlacementMode {
 pub enum InputMode {
     ExtractStructureLines,
     TreatAsBinaryLines,
+    TreatAsSoftLines,
 }
 
 impl Default for InputMode {
@@ -99,6 +101,12 @@ pub struct AsciiConfig {
     pub color_edge_boost: bool,
     #[serde(default)]
     pub stroke_tolerance: bool,
+    #[serde(default)]
+    pub target_edge_density: f32,
+    #[serde(default)]
+    pub min_component_pixels: u32,
+    #[serde(default)]
+    pub short_branch_prune_px: u32,
     #[serde(default = "default_flowdog_etf_radius")]
     pub flowdog_etf_radius: u32,
     #[serde(default = "default_flowdog_etf_iterations")]
@@ -133,6 +141,9 @@ impl Default for AsciiConfig {
             placement_mode: PlacementMode::PaperGreedy,
             color_edge_boost: false,
             stroke_tolerance: false,
+            target_edge_density: 0.0,
+            min_component_pixels: 0,
+            short_branch_prune_px: 0,
             flowdog_etf_radius: default_flowdog_etf_radius(),
             flowdog_etf_iterations: default_flowdog_etf_iterations(),
             flowdog_sigma_c: default_flowdog_sigma_c(),
@@ -169,6 +180,7 @@ fn default_flowdog_rho() -> f32 {
 }
 
 pub const DEFAULT_CHARACTER_SET: &str = " \u{3000}!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+pub const SOFT_GRID_CHARACTER_SET: &str = " .,:;'`_-~^/|()[]{}<>!7JL1lIrvx╲";
 pub const PAPER_CHARACTER_TARGET: usize = 752;
 
 #[derive(Debug, Clone)]
@@ -373,6 +385,9 @@ pub fn paper_preset(font_bytes: &[u8]) -> Result<AsciiConfig, AaError> {
         placement_mode: PlacementMode::PaperGreedy,
         color_edge_boost: false,
         stroke_tolerance: false,
+        target_edge_density: 0.0,
+        min_component_pixels: 0,
+        short_branch_prune_px: 0,
         flowdog_etf_radius: default_flowdog_etf_radius(),
         flowdog_etf_iterations: default_flowdog_etf_iterations(),
         flowdog_sigma_c: default_flowdog_sigma_c(),
@@ -393,6 +408,49 @@ pub fn color_illustration_preset(font_bytes: &[u8]) -> Result<AsciiConfig, AaErr
     config.color_edge_boost = true;
     config.stroke_tolerance = true;
     Ok(config)
+}
+
+pub fn anime_sketch_paper_preset(font_bytes: &[u8]) -> Result<AsciiConfig, AaError> {
+    let mut config = paper_preset(font_bytes)?;
+    config.input_mode = InputMode::TreatAsBinaryLines;
+    config.binary_threshold = 0.72;
+    config.thinning_mode = ThinningMode::KmmK3mLookup;
+    config.placement_mode = PlacementMode::PaperGreedy;
+    config.edge_threshold = 0.2;
+    config.score_cutoff = 0.0;
+    config.stroke_tolerance = false;
+    Ok(config)
+}
+
+pub fn soft_grid_preset(_font_bytes: &[u8]) -> Result<AsciiConfig, AaError> {
+    Ok(AsciiConfig {
+        max_input_width: 384,
+        font_px: 16.0,
+        stripe_stride_px: 16,
+        gaussian_sigma: 0.65,
+        edge_threshold: 0.2,
+        binary_threshold: 0.58,
+        mismatch_weight: 0.65,
+        match_weight: 1.0,
+        score_cutoff: 0.0,
+        glyph_alpha_threshold: 0.14,
+        input_mode: InputMode::TreatAsSoftLines,
+        structure_line_mode: StructureLineMode::FlowDog,
+        thinning_mode: ThinningMode::KmmK3mLookup,
+        placement_mode: PlacementMode::SoftGrid,
+        color_edge_boost: false,
+        stroke_tolerance: false,
+        target_edge_density: 0.0,
+        min_component_pixels: 0,
+        short_branch_prune_px: 0,
+        flowdog_etf_radius: default_flowdog_etf_radius(),
+        flowdog_etf_iterations: default_flowdog_etf_iterations(),
+        flowdog_sigma_c: default_flowdog_sigma_c(),
+        flowdog_sigma_s: default_flowdog_sigma_s(),
+        flowdog_sigma_m: default_flowdog_sigma_m(),
+        flowdog_rho: default_flowdog_rho(),
+        character_set: SOFT_GRID_CHARACTER_SET.to_owned(),
+    })
 }
 
 pub fn paper_character_set(font_bytes: &[u8]) -> Result<String, AaError> {
@@ -477,40 +535,57 @@ pub fn convert_image(
 
     let stripe_count = line_image.height.div_ceil(config.stripe_stride_px) as usize;
 
-    let started = Instant::now();
-    #[cfg(feature = "parallel")]
-    let stripe_scores: Vec<StripeScore> = (0..stripe_count)
-        .into_par_iter()
-        .map(|stripe| score_stripe(&features, &glyphs, stripe as u32, config))
-        .collect();
-    #[cfg(not(feature = "parallel"))]
-    let stripe_scores: Vec<StripeScore> = (0..stripe_count)
-        .map(|stripe| score_stripe(&features, &glyphs, stripe as u32, config))
-        .collect();
-    timings.scoring = started.elapsed();
+    let mut placements: Vec<PlacedGlyph> = if config.placement_mode == PlacementMode::SoftGrid {
+        let started = Instant::now();
+        let placements = place_soft_grid(&features, &glyphs, config);
+        timings.scoring = started.elapsed();
+        placements
+    } else {
+        let started = Instant::now();
+        #[cfg(feature = "parallel")]
+        let stripe_scores: Vec<StripeScore> = (0..stripe_count)
+            .into_par_iter()
+            .map(|stripe| score_stripe(&features, &glyphs, stripe as u32, config))
+            .collect();
+        #[cfg(not(feature = "parallel"))]
+        let stripe_scores: Vec<StripeScore> = (0..stripe_count)
+            .map(|stripe| score_stripe(&features, &glyphs, stripe as u32, config))
+            .collect();
+        timings.scoring = started.elapsed();
 
-    let started = Instant::now();
-    #[cfg(feature = "parallel")]
-    let stripe_results: Vec<Vec<PlacedGlyph>> = stripe_scores
-        .par_iter()
-        .enumerate()
-        .map(|(stripe, scores)| place_stripe(scores, &glyphs, stripe as u32, config))
-        .collect();
-    #[cfg(not(feature = "parallel"))]
-    let stripe_results: Vec<Vec<PlacedGlyph>> = stripe_scores
-        .iter()
-        .enumerate()
-        .map(|(stripe, scores)| place_stripe(scores, &glyphs, stripe as u32, config))
-        .collect();
-    let mut placements: Vec<PlacedGlyph> = stripe_results.into_iter().flatten().collect();
+        let started = Instant::now();
+        #[cfg(feature = "parallel")]
+        let stripe_results: Vec<Vec<PlacedGlyph>> = stripe_scores
+            .par_iter()
+            .enumerate()
+            .map(|(stripe, scores)| place_stripe(scores, &glyphs, stripe as u32, config))
+            .collect();
+        #[cfg(not(feature = "parallel"))]
+        let stripe_results: Vec<Vec<PlacedGlyph>> = stripe_scores
+            .iter()
+            .enumerate()
+            .map(|(stripe, scores)| place_stripe(scores, &glyphs, stripe as u32, config))
+            .collect();
+        timings.placement = started.elapsed();
+        stripe_results.into_iter().flatten().collect()
+    };
     placements.sort_by_key(|p| (p.y, p.x));
-    let text = build_text(
-        &placements,
-        &glyphs,
-        line_image.width,
-        config.stripe_stride_px,
-    );
-    timings.placement = started.elapsed();
+    let text = if config.placement_mode == PlacementMode::SoftGrid {
+        build_soft_grid_text(
+            &placements,
+            line_image.width,
+            line_image.height,
+            ((config.font_px * 0.5).round() as u32).clamp(4, 24),
+            config.stripe_stride_px.max(1),
+        )
+    } else {
+        build_text(
+            &placements,
+            &glyphs,
+            line_image.width,
+            config.stripe_stride_px,
+        )
+    };
 
     let started = Instant::now();
     let line_preview = render_line_preview(&line_image);
@@ -609,17 +684,25 @@ pub fn result_metrics(result: &AsciiResult) -> String {
 fn preprocess_image(image: &DynamicImage, config: &AsciiConfig) -> InkImage {
     let resized = resize_to_working_size(image, config.max_input_width);
     let gray = resized.to_luma8();
-    match config.input_mode {
+    let thinned = match config.input_mode {
         InputMode::ExtractStructureLines => {
             let mut edges = match config.structure_line_mode {
                 StructureLineMode::FlowDog => extract_structure_edges(&gray, config),
                 StructureLineMode::ScharrMagnitude => {
-                    extract_scharr_edges(&gray, config.edge_threshold)
+                    extract_scharr_edges(&gray, config.edge_threshold, config.target_edge_density)
                 }
             };
             if config.color_edge_boost && colorfulness(&resized) > 0.035 {
-                let color_edges =
-                    extract_color_structure_edges(&resized, config.edge_threshold * 0.9);
+                let color_density = if config.target_edge_density > 0.0 {
+                    config.target_edge_density * 0.45
+                } else {
+                    0.0
+                };
+                let color_edges = extract_color_structure_edges(
+                    &resized,
+                    config.edge_threshold * 0.9,
+                    color_density,
+                );
                 edges = merge_ink_images(&edges, &color_edges);
             }
             let cleaned = pre_thin_denoise(&edges);
@@ -630,7 +713,9 @@ fn preprocess_image(image: &DynamicImage, config: &AsciiConfig) -> InkImage {
             let cleaned = pre_thin_denoise(&binary);
             thin_image(&cleaned, config.thinning_mode)
         }
-    }
+        InputMode::TreatAsSoftLines => soft_line_probability(&gray),
+    };
+    postprocess_line_image(&thinned, config)
 }
 
 fn merge_ink_images(left: &InkImage, right: &InkImage) -> InkImage {
@@ -691,6 +776,160 @@ fn threshold_binary(gray: &GrayImage, threshold: f32) -> InkImage {
     output
 }
 
+fn soft_line_probability(gray: &GrayImage) -> InkImage {
+    let width = gray.width();
+    let height = gray.height();
+    let mut values = vec![0.0f32; (width * height) as usize];
+
+    for y in 0..height {
+        for x in 0..width {
+            let luma = gray.get_pixel(x, y)[0] as f32 / 255.0;
+            values[(y * width + x) as usize] = 1.0 - luma;
+        }
+    }
+
+    let mut probability = bilateral_filter_values(&values, width, height, 2, 0.05, 3.0);
+    for value in &mut probability {
+        *value = ((*value - 0.035) / 0.42).clamp(0.0, 1.0).powf(0.92);
+    }
+
+    let blurred = gaussian_blur_values(&probability, width, height, 0.65);
+    let mut output = InkImage::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            let idx = (y * width + x) as usize;
+            let gx = sobel_x_values(&blurred, width, height, x as i32, y as i32) / 8.0;
+            let gy = sobel_y_values(&blurred, width, height, x as i32, y as i32) / 8.0;
+            let gradient = (gx * gx + gy * gy).sqrt();
+            let edge_boost = (gradient * 3.6).clamp(0.0, 1.0);
+            let value = (blurred[idx] * 0.88 + edge_boost * 0.12).clamp(0.0, 1.0);
+            if value > 0.015 {
+                output.set(x, y, value);
+            }
+        }
+    }
+
+    output
+}
+
+fn bilateral_filter_values(
+    values: &[f32],
+    width: u32,
+    height: u32,
+    radius: i32,
+    sigma_color: f32,
+    sigma_space: f32,
+) -> Vec<f32> {
+    let mut output = vec![0.0f32; values.len()];
+    let color_denominator = 2.0 * sigma_color * sigma_color;
+    let space_denominator = 2.0 * sigma_space * sigma_space;
+
+    for y in 0..height as i32 {
+        for x in 0..width as i32 {
+            let center = sample_values(values, width, height, x, y);
+            let mut weighted = 0.0;
+            let mut weight_sum = 0.0;
+
+            for oy in -radius..=radius {
+                for ox in -radius..=radius {
+                    let sample = sample_values(values, width, height, x + ox, y + oy);
+                    let color_delta = sample - center;
+                    let space_distance = (ox * ox + oy * oy) as f32;
+                    let color_weight = (-(color_delta * color_delta) / color_denominator).exp();
+                    let space_weight = (-space_distance / space_denominator).exp();
+                    let weight = color_weight * space_weight;
+                    weighted += sample * weight;
+                    weight_sum += weight;
+                }
+            }
+
+            output[(y as u32 * width + x as u32) as usize] = if weight_sum > 0.0 {
+                weighted / weight_sum
+            } else {
+                center
+            };
+        }
+    }
+
+    output
+}
+
+fn gaussian_blur_values(values: &[f32], width: u32, height: u32, sigma: f32) -> Vec<f32> {
+    if sigma <= 0.0 || width == 0 || height == 0 {
+        return values.to_vec();
+    }
+
+    let radius = (sigma * 3.0).ceil() as i32;
+    let mut kernel = Vec::with_capacity((radius * 2 + 1) as usize);
+    let mut kernel_sum = 0.0;
+    for i in -radius..=radius {
+        let value = (-(i * i) as f32 / (2.0 * sigma * sigma)).exp();
+        kernel.push(value);
+        kernel_sum += value;
+    }
+    for value in &mut kernel {
+        *value /= kernel_sum;
+    }
+
+    let mut horizontal = vec![0.0f32; values.len()];
+    for y in 0..height as i32 {
+        for x in 0..width as i32 {
+            let mut sum = 0.0;
+            for (offset, weight) in (-radius..=radius).zip(kernel.iter()) {
+                sum += sample_values(values, width, height, x + offset, y) * weight;
+            }
+            horizontal[(y as u32 * width + x as u32) as usize] = sum;
+        }
+    }
+
+    let mut output = vec![0.0f32; values.len()];
+    for y in 0..height as i32 {
+        for x in 0..width as i32 {
+            let mut sum = 0.0;
+            for (offset, weight) in (-radius..=radius).zip(kernel.iter()) {
+                sum += sample_values(&horizontal, width, height, x, y + offset) * weight;
+            }
+            output[(y as u32 * width + x as u32) as usize] = sum;
+        }
+    }
+
+    output
+}
+
+fn sample_values(values: &[f32], width: u32, height: u32, x: i32, y: i32) -> f32 {
+    let sx = x.clamp(0, width.saturating_sub(1) as i32) as u32;
+    let sy = y.clamp(0, height.saturating_sub(1) as i32) as u32;
+    values[(sy * width + sx) as usize]
+}
+
+fn sobel_x_values(values: &[f32], width: u32, height: u32, x: i32, y: i32) -> f32 {
+    let kernel = [[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]];
+    convolve_values3(values, width, height, x, y, &kernel)
+}
+
+fn sobel_y_values(values: &[f32], width: u32, height: u32, x: i32, y: i32) -> f32 {
+    let kernel = [[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]];
+    convolve_values3(values, width, height, x, y, &kernel)
+}
+
+fn convolve_values3(
+    values: &[f32],
+    width: u32,
+    height: u32,
+    x: i32,
+    y: i32,
+    kernel: &[[f32; 3]; 3],
+) -> f32 {
+    let mut sum = 0.0;
+    for ky in 0..3 {
+        for kx in 0..3 {
+            let sample = sample_values(values, width, height, x + kx - 1, y + ky - 1);
+            sum += sample * kernel[ky as usize][kx as usize];
+        }
+    }
+    sum
+}
+
 fn extract_structure_edges(gray: &GrayImage, config: &AsciiConfig) -> InkImage {
     let flow = edge_tangent_flow(
         gray,
@@ -711,7 +950,12 @@ fn extract_structure_edges(gray: &GrayImage, config: &AsciiConfig) -> InkImage {
         }
     }
 
-    let cutoff = max_strength * config.edge_threshold.clamp(0.03, 0.92);
+    let cutoff = strength_cutoff(
+        &strengths,
+        max_strength,
+        config.edge_threshold.clamp(0.03, 0.92),
+        config.target_edge_density,
+    );
     let mut output = InkImage::new(width, height);
     for y in 0..height {
         for x in 0..width {
@@ -725,7 +969,7 @@ fn extract_structure_edges(gray: &GrayImage, config: &AsciiConfig) -> InkImage {
     output
 }
 
-fn extract_scharr_edges(gray: &GrayImage, threshold: f32) -> InkImage {
+fn extract_scharr_edges(gray: &GrayImage, threshold: f32, target_density: f32) -> InkImage {
     let blurred = filter::gaussian_blur_f32(gray, 1.0);
     let (width, height) = blurred.dimensions();
     let mut magnitudes = vec![0.0f32; (width * height) as usize];
@@ -741,7 +985,12 @@ fn extract_scharr_edges(gray: &GrayImage, threshold: f32) -> InkImage {
         }
     }
 
-    let cutoff = max_magnitude * threshold.clamp(0.02, 0.95);
+    let cutoff = strength_cutoff(
+        &magnitudes,
+        max_magnitude,
+        threshold.clamp(0.02, 0.95),
+        target_density,
+    );
     let mut output = InkImage::new(width, height);
     for y in 0..height {
         for x in 0..width {
@@ -755,7 +1004,11 @@ fn extract_scharr_edges(gray: &GrayImage, threshold: f32) -> InkImage {
     output
 }
 
-fn extract_color_structure_edges(image: &DynamicImage, threshold: f32) -> InkImage {
+fn extract_color_structure_edges(
+    image: &DynamicImage,
+    threshold: f32,
+    target_density: f32,
+) -> InkImage {
     let rgba = image.to_rgba8();
     let (width, height) = rgba.dimensions();
     let mut strengths = vec![0.0f32; (width * height) as usize];
@@ -786,7 +1039,12 @@ fn extract_color_structure_edges(image: &DynamicImage, threshold: f32) -> InkIma
         }
     }
 
-    let cutoff = max_strength * threshold.clamp(0.02, 0.95);
+    let cutoff = strength_cutoff(
+        &strengths,
+        max_strength,
+        threshold.clamp(0.02, 0.95),
+        target_density,
+    );
     let mut output = InkImage::new(width, height);
     for y in 0..height {
         for x in 0..width {
@@ -797,6 +1055,33 @@ fn extract_color_structure_edges(image: &DynamicImage, threshold: f32) -> InkIma
         }
     }
     output
+}
+
+fn strength_cutoff(
+    strengths: &[f32],
+    max_strength: f32,
+    relative_threshold: f32,
+    target_density: f32,
+) -> f32 {
+    let target_density = target_density.clamp(0.0, 0.45);
+    if target_density <= 0.0 {
+        return max_strength * relative_threshold;
+    }
+
+    let mut positives: Vec<f32> = strengths
+        .iter()
+        .copied()
+        .filter(|value| *value > 0.0 && value.is_finite())
+        .collect();
+    if positives.is_empty() {
+        return f32::INFINITY;
+    }
+
+    positives.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
+    let target_count = ((strengths.len() as f32) * target_density)
+        .round()
+        .clamp(1.0, positives.len() as f32) as usize;
+    positives[positives.len() - target_count]
 }
 
 fn edge_tangent_flow(gray: &GrayImage, iterations: usize, radius: u32) -> Vec<(f32, f32)> {
@@ -999,6 +1284,149 @@ fn pre_thin_denoise(input: &InkImage) -> InkImage {
     }
 
     output
+}
+
+fn postprocess_line_image(input: &InkImage, config: &AsciiConfig) -> InkImage {
+    let mut output = input.clone();
+    if config.min_component_pixels > 0 {
+        output = remove_small_components(&output, config.min_component_pixels as usize);
+    }
+    if config.short_branch_prune_px > 0 {
+        output = prune_short_branches(&output, config.short_branch_prune_px as usize);
+        if config.min_component_pixels > 0 {
+            output = remove_small_components(&output, config.min_component_pixels as usize);
+        }
+    }
+    output
+}
+
+fn remove_small_components(input: &InkImage, min_pixels: usize) -> InkImage {
+    if min_pixels <= 1 || input.width == 0 || input.height == 0 {
+        return input.clone();
+    }
+
+    let mut output = input.clone();
+    let mut visited = vec![false; input.ink.len()];
+    let mut queue = VecDeque::new();
+
+    for y in 0..input.height {
+        for x in 0..input.width {
+            let idx = input.idx(x, y);
+            if visited[idx] || input.ink[idx] <= 0.5 {
+                continue;
+            }
+
+            let mut component = Vec::new();
+            visited[idx] = true;
+            queue.push_back((x, y));
+            while let Some((cx, cy)) = queue.pop_front() {
+                component.push((cx, cy));
+                for (nx, ny) in foreground_neighbors(input, cx, cy) {
+                    let nidx = input.idx(nx, ny);
+                    if !visited[nidx] {
+                        visited[nidx] = true;
+                        queue.push_back((nx, ny));
+                    }
+                }
+            }
+
+            if component.len() < min_pixels {
+                for (cx, cy) in component {
+                    output.set(cx, cy, 0.0);
+                }
+            }
+        }
+    }
+
+    output
+}
+
+fn prune_short_branches(input: &InkImage, max_branch_pixels: usize) -> InkImage {
+    if max_branch_pixels == 0 || input.width < 3 || input.height < 3 {
+        return input.clone();
+    }
+
+    let mut remove = vec![false; input.ink.len()];
+    let mut endpoints = Vec::new();
+    for y in 0..input.height {
+        for x in 0..input.width {
+            if input.get(x as i32, y as i32) > 0.5 && foreground_degree(input, x, y) <= 1 {
+                endpoints.push((x, y));
+            }
+        }
+    }
+
+    for endpoint in endpoints {
+        let mut path = vec![endpoint];
+        let mut previous = None;
+        let mut current = endpoint;
+        let mut terminal_degree = foreground_degree(input, current.0, current.1);
+        let mut reached_terminal = false;
+
+        while path.len() <= max_branch_pixels {
+            let next_candidates: Vec<(u32, u32)> =
+                foreground_neighbors(input, current.0, current.1)
+                    .into_iter()
+                    .filter(|point| Some(*point) != previous)
+                    .collect();
+            if next_candidates.len() != 1 {
+                reached_terminal = true;
+                break;
+            }
+
+            let next = next_candidates[0];
+            previous = Some(current);
+            current = next;
+            terminal_degree = foreground_degree(input, current.0, current.1);
+            path.push(current);
+            if terminal_degree != 2 {
+                reached_terminal = true;
+                break;
+            }
+        }
+
+        if reached_terminal && path.len() <= max_branch_pixels + 1 {
+            let removable_len = if terminal_degree > 2 {
+                path.len().saturating_sub(1)
+            } else {
+                path.len()
+            };
+            for &(x, y) in path.iter().take(removable_len) {
+                remove[input.idx(x, y)] = true;
+            }
+        }
+    }
+
+    let mut output = input.clone();
+    for y in 0..input.height {
+        for x in 0..input.width {
+            if remove[input.idx(x, y)] {
+                output.set(x, y, 0.0);
+            }
+        }
+    }
+    output
+}
+
+fn foreground_neighbors(input: &InkImage, x: u32, y: u32) -> Vec<(u32, u32)> {
+    let mut neighbors = Vec::with_capacity(8);
+    for oy in -1..=1 {
+        for ox in -1..=1 {
+            if ox == 0 && oy == 0 {
+                continue;
+            }
+            let nx = x as i32 + ox;
+            let ny = y as i32 + oy;
+            if input.get(nx, ny) > 0.5 {
+                neighbors.push((nx as u32, ny as u32));
+            }
+        }
+    }
+    neighbors
+}
+
+fn foreground_degree(input: &InkImage, x: u32, y: u32) -> usize {
+    foreground_neighbors(input, x, y).len()
 }
 
 fn k3m_lookup_thinning(input: &InkImage) -> InkImage {
@@ -1472,6 +1900,7 @@ fn place_stripe(
             .unwrap_or_else(|| place_left_to_right(scores, glyphs, stripe, config))
         }
         PlacementMode::LeftToRight => place_left_to_right(scores, glyphs, stripe, config),
+        PlacementMode::SoftGrid => Vec::new(),
     }
 }
 
@@ -1697,6 +2126,382 @@ fn place_left_to_right(
     output
 }
 
+#[derive(Debug, Clone)]
+struct SoftGridGlyph {
+    glyph_index: usize,
+    mask: Vec<f32>,
+    ink: f32,
+    orientation_hist: [f32; 8],
+    ports: [f32; 4],
+    heavy: bool,
+    is_blank: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SoftGridCellChoice {
+    score: f32,
+    candidate_index: usize,
+}
+
+#[derive(Debug, Clone)]
+struct SoftGridPatch {
+    values: Vec<f32>,
+    sum: f32,
+    max: f32,
+    orientation_hist: [f32; 8],
+    ports: [f32; 4],
+}
+
+fn place_soft_grid(
+    features: &FeatureImage,
+    glyphs: &[GlyphImage],
+    config: &AsciiConfig,
+) -> Vec<PlacedGlyph> {
+    let cell_width = ((config.font_px * 0.5).round() as u32).clamp(4, 24);
+    let cell_height = config.stripe_stride_px.max(1);
+    let candidates = build_soft_grid_glyphs(glyphs, config, cell_width, cell_height);
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    let rows = features.height.div_ceil(cell_height);
+    let cols = features.width.div_ceil(cell_width);
+    let mut top_cells = vec![Vec::<SoftGridCellChoice>::new(); (rows * cols) as usize];
+    let mut choices = vec![0usize; (rows * cols) as usize];
+
+    for row in 0..rows {
+        let y = row * cell_height;
+        for col in 0..cols {
+            let x = col * cell_width;
+            let patch = soft_grid_patch(features, x, y, cell_width, cell_height);
+            let mut scored: Vec<SoftGridCellChoice> = candidates
+                .iter()
+                .enumerate()
+                .map(|(candidate_index, candidate)| SoftGridCellChoice {
+                    score: soft_grid_score(candidate, &patch, 1.0),
+                    candidate_index,
+                })
+                .collect();
+            scored.sort_by(|left, right| {
+                right
+                    .score
+                    .partial_cmp(&left.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            scored.truncate(9);
+
+            let cell_index = (row * cols + col) as usize;
+            choices[cell_index] = scored
+                .first()
+                .map(|choice| choice.candidate_index)
+                .unwrap_or(0);
+            top_cells[cell_index] = scored;
+        }
+    }
+
+    for _ in 0..2 {
+        for row in 0..rows {
+            for col in 0..cols {
+                let cell_index = (row * cols + col) as usize;
+                let mut best_score = f32::NEG_INFINITY;
+                let mut best_candidate = choices[cell_index];
+
+                for option in &top_cells[cell_index] {
+                    let candidate = &candidates[option.candidate_index];
+                    let mut score = option.score;
+
+                    if col > 0 {
+                        let left = &candidates[choices[(row * cols + col - 1) as usize]];
+                        score += soft_grid_compat(left, candidate, true) * 0.50;
+                    }
+                    if col + 1 < cols {
+                        let right = &candidates[choices[(row * cols + col + 1) as usize]];
+                        score += soft_grid_compat(candidate, right, true) * 0.50;
+                    }
+                    if row > 0 {
+                        let above = &candidates[choices[((row - 1) * cols + col) as usize]];
+                        score += soft_grid_compat(above, candidate, false) * 0.30;
+                    }
+                    if row + 1 < rows {
+                        let below = &candidates[choices[((row + 1) * cols + col) as usize]];
+                        score += soft_grid_compat(candidate, below, false) * 0.30;
+                    }
+
+                    if score > best_score {
+                        best_score = score;
+                        best_candidate = option.candidate_index;
+                    }
+                }
+
+                choices[cell_index] = best_candidate;
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    for row in 0..rows {
+        for col in 0..cols {
+            let candidate = &candidates[choices[(row * cols + col) as usize]];
+            if candidate.is_blank {
+                continue;
+            }
+            let glyph = &glyphs[candidate.glyph_index];
+            output.push(PlacedGlyph {
+                ch: glyph.ch,
+                x: col * cell_width,
+                y: row * cell_height,
+                width: cell_width,
+                height: cell_height,
+            });
+        }
+    }
+
+    output
+}
+
+fn build_soft_grid_glyphs(
+    glyphs: &[GlyphImage],
+    config: &AsciiConfig,
+    cell_width: u32,
+    cell_height: u32,
+) -> Vec<SoftGridGlyph> {
+    let mut seen = HashSet::new();
+    let mut ordered_chars: Vec<char> = config
+        .character_set
+        .chars()
+        .filter(|ch| seen.insert(*ch))
+        .collect();
+    if !ordered_chars.contains(&' ') {
+        ordered_chars.insert(0, ' ');
+    }
+
+    ordered_chars
+        .into_iter()
+        .filter_map(|ch| {
+            let glyph_index = glyphs.iter().position(|glyph| glyph.ch == ch)?;
+            let glyph = &glyphs[glyph_index];
+            let mut mask = vec![0.0f32; (cell_width * cell_height) as usize];
+            let x_offset = (cell_width as i32 - glyph.width as i32).max(0) / 2;
+            let y_offset = (cell_height as i32 - glyph.height as i32) / 2 - 1;
+            let mut ink = 0.0f32;
+
+            for gy in 0..glyph.height.min(cell_height) {
+                for gx in 0..glyph.width.min(cell_width) {
+                    let alpha = ((glyph.alpha_at(gx, gy) - 0.14) / 0.86).clamp(0.0, 1.0);
+                    if alpha <= 0.01 {
+                        continue;
+                    }
+                    let tx = x_offset + gx as i32;
+                    let ty = y_offset + gy as i32;
+                    if tx < 0 || ty < 0 || tx >= cell_width as i32 || ty >= cell_height as i32 {
+                        continue;
+                    }
+                    let idx = (ty as u32 * cell_width + tx as u32) as usize;
+                    mask[idx] = alpha;
+                    ink += alpha;
+                }
+            }
+
+            if ink < 0.2 && !glyph.is_blank {
+                return None;
+            }
+
+            Some(SoftGridGlyph {
+                glyph_index,
+                orientation_hist: soft_grid_orientation_hist(&mask, cell_width, cell_height),
+                ports: soft_grid_ports(&mask, cell_width, cell_height),
+                heavy: ink > 22.0,
+                mask,
+                ink,
+                is_blank: glyph.is_blank,
+            })
+        })
+        .collect()
+}
+
+fn soft_grid_patch(
+    features: &FeatureImage,
+    x: u32,
+    y: u32,
+    cell_width: u32,
+    cell_height: u32,
+) -> SoftGridPatch {
+    let mut values = vec![0.0f32; (cell_width * cell_height) as usize];
+    let mut sum = 0.0f32;
+    let mut max = 0.0f32;
+
+    for cy in 0..cell_height {
+        for cx in 0..cell_width {
+            let idx = (cy * cell_width + cx) as usize;
+            let patch = features
+                .source_at((x + cx) as i32, (y + cy) as i32)
+                .clamp(0.0, 1.0);
+            values[idx] = patch;
+            sum += patch;
+            max = max.max(patch);
+        }
+    }
+
+    SoftGridPatch {
+        orientation_hist: soft_grid_orientation_hist(&values, cell_width, cell_height),
+        ports: soft_grid_ports(&values, cell_width, cell_height),
+        values,
+        sum,
+        max,
+    }
+}
+
+fn soft_grid_score(glyph: &SoftGridGlyph, patch: &SoftGridPatch, strictness: f32) -> f32 {
+    let patch_sum = patch.sum;
+    let patch_max = patch.max;
+
+    if glyph.is_blank {
+        return -patch_sum * 1.55;
+    }
+
+    let mut overlap = 0.0f32;
+    let mut overdraw = 0.0f32;
+    let mut miss = 0.0f32;
+    for (ink, patch) in glyph.mask.iter().zip(&patch.values) {
+        let ink = ink.clamp(0.0, 1.0);
+        let patch = patch.clamp(0.0, 1.0);
+        overlap += ink * patch;
+        overdraw += ink * (1.0 - patch).powf(1.25);
+        miss += (1.0 - (ink * 1.2).clamp(0.0, 1.0)) * patch;
+    }
+
+    let orientation = dot8(&glyph.orientation_hist, &patch.orientation_hist);
+    let port_delta = glyph
+        .ports
+        .iter()
+        .zip(patch.ports.iter())
+        .map(|(left, right)| (left - right).abs())
+        .sum::<f32>();
+
+    let mut score = overlap * 4.55
+        - overdraw * (1.42 * strictness)
+        - miss * 0.20
+        - (glyph.ink - patch_sum * 0.94).abs() * 0.24
+        + orientation * patch_sum.min(7.0) * 0.82
+        - port_delta * 0.42;
+
+    if glyph.heavy && patch_sum < 5.2 {
+        score -= 3.4 * strictness;
+    }
+    if glyph.ink > 18.0 && patch_max < 0.35 {
+        score -= 1.5 * strictness;
+    }
+    if patch_sum < 0.82 || patch_max < 0.19 {
+        score -= glyph.ink * 0.35 + 1.4;
+    }
+
+    score
+}
+
+fn soft_grid_compat(left: &SoftGridGlyph, right: &SoftGridGlyph, horizontal: bool) -> f32 {
+    if left.is_blank || right.is_blank {
+        return 0.0;
+    }
+
+    let (left_port, right_port) = if horizontal {
+        (left.ports[1], right.ports[0])
+    } else {
+        (left.ports[3], right.ports[2])
+    };
+
+    left_port.min(right_port) * 1.7 - (left_port - right_port).abs() * 0.5
+        + dot8(&left.orientation_hist, &right.orientation_hist) * 0.16
+}
+
+fn soft_grid_orientation_hist(values: &[f32], width: u32, height: u32) -> [f32; 8] {
+    let mut hist = [0.0f32; 8];
+    let mut norm = 0.0;
+
+    for y in 0..height as i32 {
+        for x in 0..width as i32 {
+            let value = sample_values(values, width, height, x, y);
+            let gx = sobel_x_values(values, width, height, x, y) / 8.0;
+            let gy = sobel_y_values(values, width, height, x, y) / 8.0;
+            let magnitude = (gx * gx + gy * gy).sqrt() * value.max(0.15);
+            if magnitude <= 0.0 {
+                continue;
+            }
+            let theta = (gy.atan2(gx) + PI / 2.0).rem_euclid(PI);
+            let bin = ((theta / PI * 8.0).floor() as usize).min(7);
+            hist[bin] += magnitude;
+        }
+    }
+
+    for value in hist {
+        norm += value * value;
+    }
+    norm = norm.sqrt();
+    if norm > 1e-6 {
+        for value in &mut hist {
+            *value /= norm;
+        }
+    }
+
+    hist
+}
+
+fn soft_grid_ports(values: &[f32], width: u32, height: u32) -> [f32; 4] {
+    [
+        soft_grid_region_mean(values, width, height, 0, width.min(2), 0, height),
+        soft_grid_region_mean(
+            values,
+            width,
+            height,
+            width.saturating_sub(2),
+            width,
+            0,
+            height,
+        ),
+        soft_grid_region_mean(values, width, height, 0, width, 0, height.min(2)),
+        soft_grid_region_mean(
+            values,
+            width,
+            height,
+            0,
+            width,
+            height.saturating_sub(2),
+            height,
+        ),
+    ]
+}
+
+fn soft_grid_region_mean(
+    values: &[f32],
+    width: u32,
+    _height: u32,
+    x_start: u32,
+    x_end: u32,
+    y_start: u32,
+    y_end: u32,
+) -> f32 {
+    if x_start >= x_end || y_start >= y_end {
+        return 0.0;
+    }
+
+    let mut sum = 0.0;
+    let mut count = 0;
+    for y in y_start..y_end {
+        for x in x_start..x_end {
+            sum += values[(y * width + x) as usize];
+            count += 1;
+        }
+    }
+
+    if count > 0 { sum / count as f32 } else { 0.0 }
+}
+
+fn dot8(left: &[f32; 8], right: &[f32; 8]) -> f32 {
+    left.iter()
+        .zip(right.iter())
+        .map(|(left, right)| left * right)
+        .sum()
+}
+
 fn build_text(
     placements: &[PlacedGlyph],
     glyphs: &[GlyphImage],
@@ -1743,13 +2548,41 @@ fn build_text(
     lines.join("\n")
 }
 
+fn build_soft_grid_text(
+    placements: &[PlacedGlyph],
+    width: u32,
+    height: u32,
+    cell_width: u32,
+    cell_height: u32,
+) -> String {
+    let rows = height.div_ceil(cell_height) as usize;
+    let cols = width.div_ceil(cell_width) as usize;
+    let mut grid = vec![vec![' '; cols]; rows];
+
+    for placement in placements {
+        let row = (placement.y / cell_height) as usize;
+        let col = (placement.x / cell_width) as usize;
+        if row < rows && col < cols {
+            grid[row][col] = placement.ch;
+        }
+    }
+
+    grid.into_iter()
+        .map(|row| row.into_iter().collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn render_line_preview(image: &InkImage) -> RgbaImage {
     let mut output = RgbaImage::from_pixel(image.width, image.height, Rgba([250, 250, 246, 255]));
     for y in 0..image.height {
         for x in 0..image.width {
             let value = image.get(x as i32, y as i32);
             if value > 0.0 {
-                output.put_pixel(x, y, Rgba([14, 14, 14, 255]));
+                let shade = (250.0 * (1.0 - value.clamp(0.0, 1.0)))
+                    .round()
+                    .clamp(14.0, 250.0) as u8;
+                output.put_pixel(x, y, Rgba([shade, shade, shade, 255]));
             }
         }
     }
@@ -1801,14 +2634,16 @@ fn render_ascii_preview(
         let Some(glyph) = glyphs.iter().find(|glyph| glyph.ch == placement.ch) else {
             continue;
         };
-        for y in 0..glyph.height {
-            for x in 0..glyph.width {
+        let x_offset = placement.width.saturating_sub(glyph.width) / 2;
+        let y_offset = placement.height.saturating_sub(glyph.height) / 2;
+        for y in 0..glyph.height.min(placement.height) {
+            for x in 0..glyph.width.min(placement.width) {
                 let alpha = glyph.alpha_at(x, y);
                 if alpha <= 0.01 {
                     continue;
                 }
-                let tx = placement.x + x;
-                let ty = placement.y + y;
+                let tx = placement.x + x_offset + x;
+                let ty = placement.y + y_offset + y;
                 if tx >= width || ty >= height {
                     continue;
                 }
@@ -1971,7 +2806,7 @@ mod tests {
             }
         }
 
-        let edges = extract_color_structure_edges(&DynamicImage::ImageRgba8(image), 0.2);
+        let edges = extract_color_structure_edges(&DynamicImage::ImageRgba8(image), 0.2, 0.0);
         assert!(edges.foreground_count() > 0);
         assert!((0..12).any(|y| edges.get(11, y) > 0.0 || edges.get(12, y) > 0.0));
     }
@@ -2030,6 +2865,34 @@ mod tests {
         assert_eq!(config.font_px, 16.0);
         assert_eq!(config.placement_mode, PlacementMode::PaperGreedy);
         assert_eq!(config.thinning_mode, ThinningMode::KmmK3mLookup);
+        assert_eq!(config.character_set.chars().count(), PAPER_CHARACTER_TARGET);
+    }
+
+    #[test]
+    fn soft_grid_preset_matches_original_b2_grid_shape() {
+        let config = soft_grid_preset(&[]).unwrap();
+        assert_eq!(config.max_input_width, 384);
+        assert_eq!(config.font_px, 16.0);
+        assert_eq!(config.stripe_stride_px, 16);
+        assert_eq!(config.input_mode, InputMode::TreatAsSoftLines);
+        assert_eq!(config.placement_mode, PlacementMode::SoftGrid);
+        assert_eq!(config.character_set, SOFT_GRID_CHARACTER_SET);
+        assert!(config.character_set.contains('╲'));
+        assert!(!config.character_set.contains('\\'));
+        assert!(!config.character_set.contains('@'));
+    }
+
+    #[test]
+    fn anime_sketch_preset_keeps_paper_style_downstream() {
+        let Some(font_path) = find_paper_font() else {
+            return;
+        };
+
+        let font_bytes = std::fs::read(font_path).unwrap();
+        let config = anime_sketch_paper_preset(&font_bytes).unwrap();
+        assert_eq!(config.input_mode, InputMode::TreatAsBinaryLines);
+        assert_eq!(config.thinning_mode, ThinningMode::KmmK3mLookup);
+        assert_eq!(config.placement_mode, PlacementMode::PaperGreedy);
         assert_eq!(config.character_set.chars().count(), PAPER_CHARACTER_TARGET);
     }
 }
