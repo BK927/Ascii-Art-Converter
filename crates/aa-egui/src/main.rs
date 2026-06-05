@@ -13,12 +13,16 @@ use aa_core::{
     find_paper_font, paper_preset, save_ascii_png, save_ascii_text, save_stage_bundle,
     soft_grid_preset,
 };
+use aa_lineart::{
+    DownloadProgress, LineCleanupPreset, LineartModel, LineartSession, ModelAvailability,
+    ModelManager, ModelStatus,
+};
 use arboard::{Clipboard, ImageData};
 use eframe::egui::{
     self, Color32, ComboBox, FontFamily, FontId, Frame, Margin, RichText, ScrollArea, Slider,
     Stroke, TextureHandle, TextureOptions, Vec2,
 };
-use image::RgbaImage;
+use image::{DynamicImage, GrayImage, Rgba, RgbaImage};
 
 const SIDEBAR_WIDTH: f32 = 348.0;
 const APP_ICON_PNG: &[u8] = include_bytes!("../../../assets/icons/aa-converter-icon.png");
@@ -30,6 +34,8 @@ const SIDEBAR_TEXT: Color32 = Color32::from_rgb(219, 224, 214);
 const SIDEBAR_MUTED: Color32 = Color32::from_rgb(159, 169, 160);
 const CANVAS_BG: Color32 = Color32::from_rgb(236, 232, 223);
 const CANVAS_PANEL: Color32 = Color32::from_rgb(228, 224, 214);
+const ADVANCED_TUNING_HELP: &str =
+    "Optional. Fine-tune how extracted lines are interpreted, detected, and thinned.";
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -63,6 +69,10 @@ struct AaApp {
     config: AsciiConfig,
     mode: WorkMode,
     profile: ProfilePreset,
+    line_extractor: LineExtractorChoice,
+    cleanup_preset: LineCleanupPreset,
+    model_manager: Option<ModelManager>,
+    model_availability: Vec<ModelAvailability>,
     image_path: Option<PathBuf>,
     batch_paths: Vec<PathBuf>,
     batch_output_dir: Option<PathBuf>,
@@ -71,11 +81,15 @@ struct AaApp {
     batch_failed: usize,
     font_path: Option<PathBuf>,
     result: Option<AsciiResult>,
-    pending: Option<Receiver<Result<AsciiResult, String>>>,
+    pending: Option<Receiver<Result<ConversionOutput, String>>>,
     original_texture: Option<TextureHandle>,
+    ai_lineart_texture: Option<TextureHandle>,
+    ai_lineart_preview: Option<RgbaImage>,
     line_texture: Option<TextureHandle>,
     orientation_texture: Option<TextureHandle>,
     ascii_texture: Option<TextureHandle>,
+    download_pending: Option<Receiver<DownloadMessage>>,
+    download_progress: Option<ModelDownloadState>,
     preview_tab: PreviewTab,
     status: String,
 }
@@ -84,6 +98,7 @@ struct AaApp {
 enum PreviewTab {
     Compare,
     Original,
+    AiLineart,
     Lines,
     Orientation,
     Ascii,
@@ -106,12 +121,23 @@ enum WorkMode {
     Batch,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineExtractorChoice {
+    Classic,
+    Ai(LineartModel),
+}
+
+struct ConversionOutput {
+    result: AsciiResult,
+    ai_lineart: Option<RgbaImage>,
+}
+
 enum BatchMessage {
     ItemDone {
         index: usize,
         total: usize,
         path: PathBuf,
-        result: Result<AsciiResult, String>,
+        result: Result<ConversionOutput, String>,
     },
     Finished {
         converted: usize,
@@ -120,9 +146,34 @@ enum BatchMessage {
     },
 }
 
+enum DownloadMessage {
+    Progress {
+        model: LineartModel,
+        downloaded: u64,
+        total: u64,
+    },
+    Finished {
+        model: LineartModel,
+        result: Result<PathBuf, String>,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct ModelDownloadState {
+    model: LineartModel,
+    downloaded: u64,
+    total: u64,
+}
+
 impl AaApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         tune_style(&cc.egui_ctx);
+
+        let model_manager = ModelManager::new().ok();
+        let model_availability = model_manager
+            .as_ref()
+            .map(ModelManager::availability)
+            .unwrap_or_default();
 
         let (config, font_path, profile, status) = match load_color_config() {
             Ok((config, path)) => (
@@ -150,6 +201,10 @@ impl AaApp {
             config,
             mode: WorkMode::Single,
             profile,
+            line_extractor: LineExtractorChoice::Classic,
+            cleanup_preset: LineCleanupPreset::Balanced,
+            model_manager,
+            model_availability,
             image_path: None,
             batch_paths: Vec::new(),
             batch_output_dir: None,
@@ -160,9 +215,13 @@ impl AaApp {
             result: None,
             pending: None,
             original_texture: None,
+            ai_lineart_texture: None,
+            ai_lineart_preview: None,
             line_texture: None,
             orientation_texture: None,
             ascii_texture: None,
+            download_pending: None,
+            download_progress: None,
             preview_tab: PreviewTab::Compare,
             status,
         }
@@ -173,6 +232,8 @@ impl AaApp {
             Ok(texture) => {
                 self.image_path = Some(path.clone());
                 self.original_texture = Some(texture);
+                self.ai_lineart_texture = None;
+                self.ai_lineart_preview = None;
                 self.line_texture = None;
                 self.orientation_texture = None;
                 self.ascii_texture = None;
@@ -256,6 +317,74 @@ impl AaApp {
         );
     }
 
+    fn refresh_model_availability(&mut self) {
+        if let Ok(manager) = ModelManager::new() {
+            self.model_availability = manager.availability();
+            self.model_manager = Some(manager);
+        }
+    }
+
+    fn selected_model_status(&self) -> Option<&ModelStatus> {
+        let LineExtractorChoice::Ai(model) = self.line_extractor else {
+            return None;
+        };
+        self.model_availability
+            .iter()
+            .find(|item| item.entry.id == model.id())
+            .map(|item| &item.status)
+    }
+
+    fn selected_model_blocker(&self) -> Option<String> {
+        let LineExtractorChoice::Ai(model) = self.line_extractor else {
+            return None;
+        };
+        match self.selected_model_status() {
+            Some(status) if status.is_available() => None,
+            Some(ModelStatus::Corrupt { .. }) => Some(format!(
+                "{} needs repair. Use Repair model before converting.",
+                model.label()
+            )),
+            _ => Some(format!(
+                "{} is not installed. Use Download model before converting.",
+                model.label()
+            )),
+        }
+    }
+
+    fn start_model_download(&mut self, model: LineartModel) {
+        if self.is_busy() {
+            return;
+        }
+
+        let Some(manager) = self.model_manager.clone() else {
+            self.status = "Model catalog is unavailable.".to_owned();
+            return;
+        };
+
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let result = manager.download_model(model, |progress: DownloadProgress| {
+                let _ = sender.send(DownloadMessage::Progress {
+                    model,
+                    downloaded: progress.downloaded,
+                    total: progress.total,
+                });
+            });
+            let _ = sender.send(DownloadMessage::Finished {
+                model,
+                result: result.map_err(|err| err.to_string()),
+            });
+        });
+
+        self.download_pending = Some(receiver);
+        self.download_progress = Some(ModelDownloadState {
+            model,
+            downloaded: 0,
+            total: 0,
+        });
+        self.status = format!("Starting {} download...", model.label());
+    }
+
     fn open_font(&mut self) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("Fonts", &["ttf", "otf"])
@@ -275,6 +404,7 @@ impl AaApp {
                 self.config = config;
                 self.font_path = Some(path);
                 self.profile = ProfilePreset::Paper;
+                self.line_extractor = LineExtractorChoice::Classic;
                 self.status = format!(
                     "Line Art preset ready: {} chars / target {}",
                     chars, PAPER_CHARACTER_TARGET
@@ -297,6 +427,7 @@ impl AaApp {
             self.font_path = Some(path);
         }
         self.profile = ProfilePreset::ColorIllustration;
+        self.line_extractor = LineExtractorChoice::Classic;
         self.status = "Illustration preset ready.".to_owned();
     }
 
@@ -326,6 +457,7 @@ impl AaApp {
             self.font_path = Some(path);
         }
         self.profile = ProfilePreset::LineArt;
+        self.line_extractor = LineExtractorChoice::Classic;
         self.status = "Fine Lines preset ready.".to_owned();
     }
 
@@ -340,6 +472,7 @@ impl AaApp {
             self.font_path = Some(path);
         }
         self.profile = ProfilePreset::SoftGrid;
+        self.line_extractor = LineExtractorChoice::Classic;
         self.status = "B2 Soft Grid preset ready.".to_owned();
     }
 
@@ -354,7 +487,13 @@ impl AaApp {
             self.font_path = Some(path);
         }
         self.profile = ProfilePreset::AiSketch;
-        self.status = "AI Sketch Lines preset ready.".to_owned();
+        self.line_extractor = LineExtractorChoice::Ai(LineartModel::Informative);
+        self.cleanup_preset = LineCleanupPreset::Balanced;
+        let status = self
+            .selected_model_status()
+            .map(ModelStatus::label)
+            .unwrap_or("Not installed");
+        self.status = format!("Informative + Balanced selected ({status}).");
     }
 
     fn run_conversion(&mut self) {
@@ -372,12 +511,24 @@ impl AaApp {
             return;
         };
 
+        if let Some(message) = self.selected_model_blocker() {
+            self.status = message;
+            return;
+        }
+
         let config = self.config.clone();
+        let line_extractor = self.line_extractor;
+        let cleanup_preset = self.cleanup_preset;
         let (sender, receiver) = mpsc::channel();
 
         thread::spawn(move || {
-            let message = aa_core::convert_path(&image_path, &font_path, &config)
-                .map_err(|err| format!("Conversion failed: {err}"));
+            let message = convert_single_item(
+                &image_path,
+                &font_path,
+                &config,
+                line_extractor,
+                cleanup_preset,
+            );
             let _ = sender.send(message);
         });
 
@@ -400,6 +551,11 @@ impl AaApp {
             return;
         };
 
+        if let Some(message) = self.selected_model_blocker() {
+            self.status = message;
+            return;
+        }
+
         if self.batch_output_dir.is_none() {
             self.choose_batch_output();
         }
@@ -410,16 +566,63 @@ impl AaApp {
 
         let paths = self.batch_paths.clone();
         let config = self.config.clone();
+        let line_extractor = self.line_extractor;
+        let cleanup_preset = self.cleanup_preset;
         let (sender, receiver) = mpsc::channel();
 
         thread::spawn(move || {
             let total = paths.len();
             let mut converted = 0;
             let mut failed = 0;
+            let font_bytes = match fs::read(&font_path) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    let _ = sender.send(BatchMessage::ItemDone {
+                        index: 0,
+                        total,
+                        path: font_path,
+                        result: Err(format!("Font load failed: {err}")),
+                    });
+                    let _ = sender.send(BatchMessage::Finished {
+                        converted: 0,
+                        failed: total,
+                        output_dir,
+                    });
+                    return;
+                }
+            };
+            let mut lineart_session = match load_lineart_session(line_extractor) {
+                Ok(session) => session,
+                Err(err) => {
+                    for (index, path) in paths.into_iter().enumerate() {
+                        failed += 1;
+                        let _ = sender.send(BatchMessage::ItemDone {
+                            index,
+                            total,
+                            path,
+                            result: Err(err.clone()),
+                        });
+                    }
+                    let _ = sender.send(BatchMessage::Finished {
+                        converted,
+                        failed,
+                        output_dir,
+                    });
+                    return;
+                }
+            };
 
             for (index, path) in paths.into_iter().enumerate() {
-                let result =
-                    convert_and_save_batch_item(&path, &font_path, &config, &output_dir, index);
+                let result = convert_and_save_batch_item(
+                    &path,
+                    &font_bytes,
+                    &config,
+                    line_extractor,
+                    cleanup_preset,
+                    lineart_session.as_mut(),
+                    &output_dir,
+                    index,
+                );
                 if result.is_ok() {
                     converted += 1;
                 } else {
@@ -448,7 +651,7 @@ impl AaApp {
     }
 
     fn is_busy(&self) -> bool {
-        self.pending.is_some() || self.batch_pending.is_some()
+        self.pending.is_some() || self.batch_pending.is_some() || self.download_pending.is_some()
     }
 
     fn poll_conversion(&mut self, ctx: &egui::Context) {
@@ -457,7 +660,19 @@ impl AaApp {
         };
 
         match receiver.try_recv() {
-            Ok(Ok(result)) => {
+            Ok(Ok(output)) => {
+                if let Some(ai_lineart) = output.ai_lineart {
+                    self.ai_lineart_texture = Some(load_texture_from_rgba(
+                        ctx,
+                        &ai_lineart,
+                        "ai-lineart-preview",
+                    ));
+                    self.ai_lineart_preview = Some(ai_lineart);
+                } else {
+                    self.ai_lineart_texture = None;
+                    self.ai_lineart_preview = None;
+                }
+                let result = output.result;
                 self.line_texture = Some(load_texture_from_rgba(
                     ctx,
                     &result.line_preview,
@@ -508,11 +723,23 @@ impl AaApp {
                     path,
                     result,
                 }) => match result {
-                    Ok(result) => {
+                    Ok(output) => {
                         self.batch_done += 1;
                         if let Ok(texture) = load_texture_from_path(ctx, &path, "batch-original") {
                             self.original_texture = Some(texture);
                         }
+                        if let Some(ai_lineart) = output.ai_lineart {
+                            self.ai_lineart_texture = Some(load_texture_from_rgba(
+                                ctx,
+                                &ai_lineart,
+                                "batch-ai-lineart-preview",
+                            ));
+                            self.ai_lineart_preview = Some(ai_lineart);
+                        } else {
+                            self.ai_lineart_texture = None;
+                            self.ai_lineart_preview = None;
+                        }
+                        let result = output.result;
                         self.line_texture = Some(load_texture_from_rgba(
                             ctx,
                             &result.line_preview,
@@ -561,6 +788,60 @@ impl AaApp {
                 }
                 Err(TryRecvError::Disconnected) => {
                     self.status = "Batch worker stopped unexpectedly.".to_owned();
+                    break;
+                }
+            }
+        }
+    }
+
+    fn poll_model_download(&mut self, ctx: &egui::Context) {
+        let Some(receiver) = self.download_pending.take() else {
+            return;
+        };
+
+        loop {
+            match receiver.try_recv() {
+                Ok(DownloadMessage::Progress {
+                    model,
+                    downloaded,
+                    total,
+                }) => {
+                    self.download_progress = Some(ModelDownloadState {
+                        model,
+                        downloaded,
+                        total,
+                    });
+                    self.status = format!(
+                        "Downloading {}: {} / {}",
+                        model.label(),
+                        format_bytes(downloaded),
+                        format_bytes(total)
+                    );
+                }
+                Ok(DownloadMessage::Finished { model, result }) => {
+                    self.download_progress = None;
+                    match result {
+                        Ok(path) => {
+                            self.refresh_model_availability();
+                            self.status =
+                                format!("{} ready: {}", model.label(), compact_path(&path));
+                        }
+                        Err(err) => {
+                            self.refresh_model_availability();
+                            self.status = format!("{} download failed: {err}", model.label());
+                        }
+                    }
+                    break;
+                }
+                Err(TryRecvError::Empty) => {
+                    self.download_pending = Some(receiver);
+                    ctx.request_repaint_after(Duration::from_millis(120));
+                    break;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.download_progress = None;
+                    self.refresh_model_availability();
+                    self.status = "Model download worker stopped unexpectedly.".to_owned();
                     break;
                 }
             }
@@ -636,7 +917,12 @@ impl AaApp {
         };
 
         match save_stage_bundle(result, &path) {
-            Ok(()) => self.status = format!("Saved stages to {}", compact_path(&path)),
+            Ok(()) => {
+                if let Some(ai_lineart) = &self.ai_lineart_preview {
+                    let _ = ai_lineart.save(path.join("00-ai-lineart.png"));
+                }
+                self.status = format!("Saved stages to {}", compact_path(&path));
+            }
             Err(err) => self.status = format!("Stage export failed: {err}"),
         }
     }
@@ -685,7 +971,8 @@ impl AaApp {
     }
 
     fn sidebar_controls(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
-        ui.label(RichText::new("AA Converter").size(23.0).strong());
+        ui.label(RichText::new("AA Converter").size(23.0).strong())
+            .on_hover_text("Start with Open Image, keep the Illustration preset, click Convert, then save or copy the result.");
         ui.label(
             RichText::new(self.profile.label())
                 .small()
@@ -721,7 +1008,7 @@ impl AaApp {
                 "Illustration",
                 self.profile == ProfilePreset::ColorIllustration,
             )
-            .on_hover_text("Best starting point for color character illustrations.")
+            .on_hover_text("Recommended first choice for color anime or character illustrations.")
             .clicked()
             {
                 self.apply_color_preset();
@@ -740,15 +1027,15 @@ impl AaApp {
             }
             if preset_button(ui, "B2 Soft Grid", self.profile == ProfilePreset::SoftGrid)
                 .on_hover_text(
-                    "Original B2 soft map + 8x16 grid matcher for AI/soft line-art input.",
+                    "Alternative sketch-style matcher. Useful for soft AI line art when the default looks too sparse.",
                 )
                 .clicked()
             {
                 self.apply_soft_grid_preset();
             }
-            if preset_button(ui, "AI Sketch Lines", self.profile == ProfilePreset::AiSketch)
+            if preset_button(ui, "AI 1px Lines", self.profile == ProfilePreset::AiSketch)
                 .on_hover_text(
-                    "For AI-extracted line art: convert to 1px binary lines, then use paper-greedy placement.",
+                    "Use an AI model to make line art first. Choose a model in Line Extraction, download it if needed, then Convert.",
                 )
                 .clicked()
             {
@@ -764,127 +1051,35 @@ impl AaApp {
         }
         path_line(ui, "Font", self.font_path.as_deref());
 
-        section_label(ui, "Pipeline");
-        ComboBox::from_id_salt("input-mode")
-            .width(ui.available_width())
-            .selected_text(match self.config.input_mode {
-                InputMode::ExtractStructureLines => "structure lines",
-                InputMode::TreatAsBinaryLines => "binary lines",
-                InputMode::TreatAsSoftLines => "soft lines",
-            })
-            .show_ui(ui, |ui| {
-                if ui
-                    .selectable_value(
-                        &mut self.config.input_mode,
-                        InputMode::ExtractStructureLines,
-                        "structure lines",
-                    )
-                    .changed()
-                {
-                    self.profile = ProfilePreset::Custom;
-                }
-                if ui
-                    .selectable_value(
-                        &mut self.config.input_mode,
-                        InputMode::TreatAsBinaryLines,
-                        "binary lines",
-                    )
-                    .changed()
-                {
-                    self.profile = ProfilePreset::Custom;
-                }
-                if ui
-                    .selectable_value(
-                        &mut self.config.input_mode,
-                        InputMode::TreatAsSoftLines,
-                        "soft lines",
-                    )
-                    .changed()
-                {
-                    self.profile = ProfilePreset::Custom;
-                }
-            })
-            .response
-            .on_hover_text(
-                "Choose whether the app should extract structure lines, threshold a line-art image, or preserve soft sketch darkness.",
-            );
+        section_label(ui, "Line Extraction");
+        self.line_extractor_controls(ui);
+        egui::CollapsingHeader::new(
+            RichText::new("Advanced tuning  ?")
+                .small()
+                .strong()
+                .color(SIDEBAR_TEXT),
+        )
+        .id_salt("advanced-line-tuning")
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.add_space(4.0);
+            self.advanced_line_tuning_controls(ui);
+        })
+        .header_response
+        .on_hover_text(ADVANCED_TUNING_HELP);
 
-        ComboBox::from_id_salt("structure-mode")
-            .width(ui.available_width())
-            .selected_text(match self.config.structure_line_mode {
-                StructureLineMode::FlowDog => "ETF/FDoG-style",
-                StructureLineMode::ScharrMagnitude => "Scharr",
-            })
-            .show_ui(ui, |ui| {
-                if ui
-                    .selectable_value(
-                        &mut self.config.structure_line_mode,
-                        StructureLineMode::FlowDog,
-                        "ETF/FDoG-style",
-                    )
-                    .changed()
-                {
-                    self.profile = ProfilePreset::Custom;
-                }
-                if ui
-                    .selectable_value(
-                        &mut self.config.structure_line_mode,
-                        StructureLineMode::ScharrMagnitude,
-                        "Scharr",
-                    )
-                    .changed()
-                {
-                    self.profile = ProfilePreset::Custom;
-                }
-            })
-            .response
-            .on_hover_text("ETF/FDoG-style favors smoother coherent contours; Scharr is sharper but can catch more noise.");
-
-        ComboBox::from_id_salt("thinning-mode")
-            .width(ui.available_width())
-            .selected_text(match self.config.thinning_mode {
-                ThinningMode::KmmK3mLookup => "KMM/K3M lookup",
-                ThinningMode::ZhangSuen => "Zhang-Suen",
-            })
-            .show_ui(ui, |ui| {
-                if ui
-                    .selectable_value(
-                        &mut self.config.thinning_mode,
-                        ThinningMode::KmmK3mLookup,
-                        "KMM/K3M lookup",
-                    )
-                    .changed()
-                {
-                    self.profile = ProfilePreset::Custom;
-                }
-                if ui
-                    .selectable_value(
-                        &mut self.config.thinning_mode,
-                        ThinningMode::ZhangSuen,
-                        "Zhang-Suen",
-                    )
-                    .changed()
-                {
-                    self.profile = ProfilePreset::Custom;
-                }
-            })
-            .response
-            .on_hover_text("Reduces detected lines into thin strokes before glyph matching.");
-
+        section_label(ui, "ASCII Rendering");
         ComboBox::from_id_salt("placement-mode")
             .width(ui.available_width())
-            .selected_text(match self.config.placement_mode {
-                PlacementMode::PaperGreedy => "paper greedy",
-                PlacementMode::LeftToRight => "left to right",
-                PlacementMode::SoftGrid => "soft grid",
-            })
+            .selected_text(placement_mode_label(self.config.placement_mode))
             .show_ui(ui, |ui| {
                 if ui
                     .selectable_value(
                         &mut self.config.placement_mode,
                         PlacementMode::PaperGreedy,
-                        "paper greedy",
+                        placement_mode_label(PlacementMode::PaperGreedy),
                     )
+                    .on_hover_text(placement_mode_help(PlacementMode::PaperGreedy))
                     .changed()
                 {
                     self.profile = ProfilePreset::Custom;
@@ -893,8 +1088,9 @@ impl AaApp {
                     .selectable_value(
                         &mut self.config.placement_mode,
                         PlacementMode::LeftToRight,
-                        "left to right",
+                        placement_mode_label(PlacementMode::LeftToRight),
                     )
+                    .on_hover_text(placement_mode_help(PlacementMode::LeftToRight))
                     .changed()
                 {
                     self.profile = ProfilePreset::Custom;
@@ -903,17 +1099,17 @@ impl AaApp {
                     .selectable_value(
                         &mut self.config.placement_mode,
                         PlacementMode::SoftGrid,
-                        "soft grid",
+                        placement_mode_label(PlacementMode::SoftGrid),
                     )
+                    .on_hover_text(placement_mode_help(PlacementMode::SoftGrid))
                     .changed()
                 {
                     self.profile = ProfilePreset::Custom;
                 }
             })
             .response
-            .on_hover_text("paper greedy follows the paper-inspired recursive placement; soft grid is the B2-style sketch matcher; left to right is mainly a comparison baseline.");
+            .on_hover_text(placement_mode_help(self.config.placement_mode));
 
-        section_label(ui, "Geometry");
         if u32_slider(
             ui,
             &mut self.config.max_input_width,
@@ -940,28 +1136,6 @@ impl AaApp {
             self.profile = ProfilePreset::Custom;
         }
 
-        section_label(ui, "Features");
-        if f32_slider(ui, &mut self.config.gaussian_sigma, 0.3..=2.2, "blur")
-            .on_hover_text("Smooths strokes before orientation scoring. Higher values reduce noise but can erase small detail.")
-            .changed()
-        {
-            self.profile = ProfilePreset::Custom;
-        }
-        if f32_slider(ui, &mut self.config.edge_threshold, 0.04..=0.72, "edge")
-            .on_hover_text("Edge sensitivity. Lower values keep faint edges; higher values keep only stronger contours.")
-            .changed()
-        {
-            self.profile = ProfilePreset::Custom;
-        }
-        if f32_slider(ui, &mut self.config.binary_threshold, 0.05..=0.95, "binary")
-            .on_hover_text(
-                "Black/white cutoff for line-art input. Lower values keep lighter gray strokes.",
-            )
-            .changed()
-        {
-            self.profile = ProfilePreset::Custom;
-        }
-        section_label(ui, "Scoring");
         if f32_slider(ui, &mut self.config.mismatch_weight, 0.0..=2.0, "mismatch")
             .on_hover_text("Penalty for glyph ink that does not match the extracted line image.")
             .changed()
@@ -996,7 +1170,6 @@ impl AaApp {
             self.profile = ProfilePreset::Custom;
         }
 
-        section_label(ui, "Characters");
         if ui
             .add(
                 egui::TextEdit::multiline(&mut self.config.character_set)
@@ -1013,11 +1186,173 @@ impl AaApp {
         }
     }
 
+    fn advanced_line_tuning_controls(&mut self, ui: &mut egui::Ui) {
+        control_caption(
+            ui,
+            "Input mode",
+            "How the current image should be interpreted before line detection.",
+        );
+        ComboBox::from_id_salt("input-mode")
+            .width(ui.available_width())
+            .selected_text(input_mode_label(self.config.input_mode))
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_value(
+                        &mut self.config.input_mode,
+                        InputMode::ExtractStructureLines,
+                        input_mode_label(InputMode::ExtractStructureLines),
+                    )
+                    .on_hover_text(input_mode_help(InputMode::ExtractStructureLines))
+                    .changed()
+                {
+                    self.profile = ProfilePreset::Custom;
+                }
+                if ui
+                    .selectable_value(
+                        &mut self.config.input_mode,
+                        InputMode::TreatAsBinaryLines,
+                        input_mode_label(InputMode::TreatAsBinaryLines),
+                    )
+                    .on_hover_text(input_mode_help(InputMode::TreatAsBinaryLines))
+                    .changed()
+                {
+                    self.profile = ProfilePreset::Custom;
+                }
+                if ui
+                    .selectable_value(
+                        &mut self.config.input_mode,
+                        InputMode::TreatAsSoftLines,
+                        input_mode_label(InputMode::TreatAsSoftLines),
+                    )
+                    .on_hover_text(input_mode_help(InputMode::TreatAsSoftLines))
+                    .changed()
+                {
+                    self.profile = ProfilePreset::Custom;
+                }
+                if ui
+                    .selectable_value(
+                        &mut self.config.input_mode,
+                        InputMode::NormalizeAiLineart,
+                        input_mode_label(InputMode::NormalizeAiLineart),
+                    )
+                    .on_hover_text(input_mode_help(InputMode::NormalizeAiLineart))
+                    .changed()
+                {
+                    self.profile = ProfilePreset::Custom;
+                }
+            })
+            .response
+            .on_hover_text(input_mode_help(self.config.input_mode));
+
+        control_caption(
+            ui,
+            "Structure",
+            "Which detector finds line candidates in the image.",
+        );
+        ComboBox::from_id_salt("structure-mode")
+            .width(ui.available_width())
+            .selected_text(structure_mode_label(self.config.structure_line_mode))
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_value(
+                        &mut self.config.structure_line_mode,
+                        StructureLineMode::FlowDog,
+                        structure_mode_label(StructureLineMode::FlowDog),
+                    )
+                    .on_hover_text(structure_mode_help(StructureLineMode::FlowDog))
+                    .changed()
+                {
+                    self.profile = ProfilePreset::Custom;
+                }
+                if ui
+                    .selectable_value(
+                        &mut self.config.structure_line_mode,
+                        StructureLineMode::ScharrMagnitude,
+                        structure_mode_label(StructureLineMode::ScharrMagnitude),
+                    )
+                    .on_hover_text(structure_mode_help(StructureLineMode::ScharrMagnitude))
+                    .changed()
+                {
+                    self.profile = ProfilePreset::Custom;
+                }
+            })
+            .response
+            .on_hover_text(structure_mode_help(self.config.structure_line_mode));
+
+        control_caption(
+            ui,
+            "Thinning",
+            "How detected strokes are reduced into thinner structure lines.",
+        );
+        ComboBox::from_id_salt("thinning-mode")
+            .width(ui.available_width())
+            .selected_text(thinning_mode_label(self.config.thinning_mode))
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_value(
+                        &mut self.config.thinning_mode,
+                        ThinningMode::KmmK3mLookup,
+                        thinning_mode_label(ThinningMode::KmmK3mLookup),
+                    )
+                    .on_hover_text(thinning_mode_help(ThinningMode::KmmK3mLookup))
+                    .changed()
+                {
+                    self.profile = ProfilePreset::Custom;
+                }
+                if ui
+                    .selectable_value(
+                        &mut self.config.thinning_mode,
+                        ThinningMode::ZhangSuen,
+                        thinning_mode_label(ThinningMode::ZhangSuen),
+                    )
+                    .on_hover_text(thinning_mode_help(ThinningMode::ZhangSuen))
+                    .changed()
+                {
+                    self.profile = ProfilePreset::Custom;
+                }
+                if ui
+                    .selectable_value(
+                        &mut self.config.thinning_mode,
+                        ThinningMode::GuoHall,
+                        thinning_mode_label(ThinningMode::GuoHall),
+                    )
+                    .on_hover_text(thinning_mode_help(ThinningMode::GuoHall))
+                    .changed()
+                {
+                    self.profile = ProfilePreset::Custom;
+                }
+            })
+            .response
+            .on_hover_text(thinning_mode_help(self.config.thinning_mode));
+
+        if f32_slider(ui, &mut self.config.gaussian_sigma, 0.3..=2.2, "blur")
+            .on_hover_text("Smooths strokes before orientation scoring. Higher values reduce noise but can erase small detail.")
+            .changed()
+        {
+            self.profile = ProfilePreset::Custom;
+        }
+        if f32_slider(ui, &mut self.config.edge_threshold, 0.04..=0.72, "edge")
+            .on_hover_text("Edge sensitivity. Lower values keep faint edges; higher values keep only stronger contours.")
+            .changed()
+        {
+            self.profile = ProfilePreset::Custom;
+        }
+        if f32_slider(ui, &mut self.config.binary_threshold, 0.05..=0.95, "binary")
+            .on_hover_text(
+                "Black/white cutoff for line-art input. Lower values keep lighter gray strokes.",
+            )
+            .changed()
+        {
+            self.profile = ProfilePreset::Custom;
+        }
+    }
+
     fn single_source_controls(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         ui.columns(2, |columns| {
             let open_width = columns[0].available_width();
             if columns[0]
                 .add_sized([open_width, 34.0], egui::Button::new("Open Image"))
+                .on_hover_text("Load one image to convert. Character illustrations and clean line art work best.")
                 .clicked()
             {
                 self.open_image(ctx);
@@ -1025,6 +1360,7 @@ impl AaApp {
             let font_width = columns[1].available_width();
             if columns[1]
                 .add_sized([font_width, 34.0], egui::Button::new("Select Font"))
+                .on_hover_text("Optional. Choose a TTF or OTF font for the ASCII glyphs. The bundled font is used by default.")
                 .clicked()
             {
                 self.open_font();
@@ -1037,6 +1373,7 @@ impl AaApp {
             let add_width = columns[0].available_width();
             if columns[0]
                 .add_sized([add_width, 34.0], egui::Button::new("Add Images"))
+                .on_hover_text("Add several images one by one for batch conversion.")
                 .clicked()
             {
                 self.add_batch_images();
@@ -1044,6 +1381,7 @@ impl AaApp {
             let folder_width = columns[1].available_width();
             if columns[1]
                 .add_sized([folder_width, 34.0], egui::Button::new("Add Folder"))
+                .on_hover_text("Add every supported image in a folder to the batch queue.")
                 .clicked()
             {
                 self.add_batch_folder();
@@ -1054,6 +1392,7 @@ impl AaApp {
             let output_width = columns[0].available_width();
             if columns[0]
                 .add_sized([output_width, 34.0], egui::Button::new("Output Folder"))
+                .on_hover_text("Choose where batch results will be written.")
                 .clicked()
             {
                 self.choose_batch_output();
@@ -1061,6 +1400,7 @@ impl AaApp {
             let font_width = columns[1].available_width();
             if columns[1]
                 .add_sized([font_width, 34.0], egui::Button::new("Select Font"))
+                .on_hover_text("Optional. Choose a TTF or OTF font for the ASCII glyphs. The bundled font is used by default.")
                 .clicked()
             {
                 self.open_font();
@@ -1078,6 +1418,7 @@ impl AaApp {
                     !self.is_busy() && !self.batch_paths.is_empty(),
                     egui::Button::new("Clear"),
                 )
+                .on_hover_text("Remove all queued batch images.")
                 .clicked()
             {
                 self.batch_paths.clear();
@@ -1120,6 +1461,140 @@ impl AaApp {
         }
     }
 
+    fn line_extractor_controls(&mut self, ui: &mut egui::Ui) {
+        let selected_text = match self.line_extractor {
+            LineExtractorChoice::Classic => "Built-in extractor".to_owned(),
+            LineExtractorChoice::Ai(model) => {
+                let status = self
+                    .selected_model_status()
+                    .map(ModelStatus::label)
+                    .unwrap_or("Not installed");
+                format!("{} - {status}", model.label())
+            }
+        };
+
+        control_caption(
+            ui,
+            "Extractor",
+            "Choose the source of the line art: built-in extraction or an optional AI model.",
+        );
+        ComboBox::from_id_salt("line-extractor")
+            .width(ui.available_width())
+            .selected_text(selected_text)
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_value(
+                        &mut self.line_extractor,
+                        LineExtractorChoice::Classic,
+                        "Built-in extractor",
+                    )
+                    .on_hover_text(line_extractor_help(LineExtractorChoice::Classic))
+                    .changed()
+                {
+                    self.profile = ProfilePreset::Custom;
+                }
+
+                for model in LineartModel::ALL {
+                    let status = self
+                        .model_availability
+                        .iter()
+                        .find(|item| item.entry.id == model.id())
+                        .map(|item| item.status.label())
+                        .unwrap_or("Not installed");
+                    if ui
+                        .selectable_value(
+                            &mut self.line_extractor,
+                            LineExtractorChoice::Ai(model),
+                            format!("{} - {status}", model.label()),
+                        )
+                        .on_hover_text(line_extractor_help(LineExtractorChoice::Ai(model)))
+                        .changed()
+                    {
+                        self.profile = ProfilePreset::AiSketch;
+                        self.config.input_mode = InputMode::NormalizeAiLineart;
+                        apply_cleanup_preset_to_config(&mut self.config, self.cleanup_preset);
+                    }
+                }
+            })
+            .response
+            .on_hover_text(line_extractor_help(self.line_extractor));
+
+        if !matches!(self.line_extractor, LineExtractorChoice::Classic) {
+            control_caption(
+                ui,
+                "1px cleanup",
+                "Choose how strongly AI line art is cleaned and thinned before ASCII rendering.",
+            );
+            ComboBox::from_id_salt("line-cleanup")
+                .width(ui.available_width())
+                .selected_text(self.cleanup_preset.label())
+                .show_ui(ui, |ui| {
+                    for cleanup in LineCleanupPreset::ALL {
+                        if ui
+                            .selectable_value(&mut self.cleanup_preset, cleanup, cleanup.label())
+                            .on_hover_text(cleanup.note())
+                            .changed()
+                        {
+                            self.profile = ProfilePreset::AiSketch;
+                            apply_cleanup_preset_to_config(&mut self.config, cleanup);
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(self.cleanup_preset.note());
+
+            ui.horizontal_wrapped(|ui| {
+                let status_label = self
+                    .selected_model_status()
+                    .map(ModelStatus::label)
+                    .unwrap_or("Not installed");
+                let model_label = match self.line_extractor {
+                    LineExtractorChoice::Ai(model) => model.label(),
+                    LineExtractorChoice::Classic => "Built-in extractor",
+                };
+                ui.label(
+                    RichText::new(format!("{model_label} - {status_label}"))
+                        .small()
+                        .color(SIDEBAR_MUTED),
+                );
+
+                if let Some(progress) = &self.download_progress {
+                    ui.label(
+                        RichText::new(format!(
+                            "{} {} / {}",
+                            progress.model.label(),
+                            format_bytes(progress.downloaded),
+                            format_bytes(progress.total)
+                        ))
+                        .small()
+                        .color(SIDEBAR_TEXT),
+                    );
+                }
+            });
+
+            if let LineExtractorChoice::Ai(model) = self.line_extractor {
+                let needs_download = self
+                    .selected_model_status()
+                    .map(|status| !status.is_available())
+                    .unwrap_or(true);
+                if needs_download
+                    && ui
+                        .add_enabled(
+                            !self.is_busy(),
+                            egui::Button::new(match self.selected_model_status() {
+                                Some(ModelStatus::Corrupt { .. }) => "Repair model",
+                                _ => "Download model",
+                            }),
+                        )
+                        .on_hover_text("Download this AI line-art model into the models folder next to the app. If that folder is not writable, the app reports an error instead of saving elsewhere.")
+                        .clicked()
+                {
+                    self.start_model_download(model);
+                }
+            }
+        }
+    }
+
     fn sidebar_footer(&mut self, ui: &mut egui::Ui) {
         let running = self.is_busy();
         let can_export = self.result.is_some();
@@ -1136,7 +1611,8 @@ impl AaApp {
                 ui.add(
                     egui::Label::new(RichText::new(&self.status).small().color(SIDEBAR_TEXT))
                         .wrap(),
-                );
+                )
+                .on_hover_text("Current app status. Errors and download progress appear here.");
 
                 ui.add_space(8.0);
                 let convert_fill = if running {
@@ -1157,6 +1633,14 @@ impl AaApp {
                 .min_size(Vec2::new(ui.available_width(), 40.0));
                 if ui
                     .add_enabled(!running && can_start, convert_button)
+                    .on_hover_text(match self.mode {
+                        WorkMode::Single => {
+                            "Convert the loaded image using the current preset and settings."
+                        }
+                        WorkMode::Batch => {
+                            "Convert every queued image using the current preset and settings."
+                        }
+                    })
                     .clicked()
                 {
                     match self.mode {
@@ -1168,21 +1652,36 @@ impl AaApp {
                 ui.add_space(6.0);
                 let ctx = ui.ctx().clone();
                 ui.columns(2, |columns| {
-                    if footer_button(&mut columns[0], can_export, "Copy ASCII").clicked() {
+                    if footer_button(&mut columns[0], can_export, "Copy ASCII")
+                        .on_hover_text(action_help("Copy ASCII"))
+                        .clicked()
+                    {
                         self.copy_text(&ctx);
                     }
-                    if footer_button(&mut columns[1], can_export, "Copy Image").clicked() {
+                    if footer_button(&mut columns[1], can_export, "Copy Image")
+                        .on_hover_text(action_help("Copy Image"))
+                        .clicked()
+                    {
                         self.copy_image();
                     }
                 });
                 ui.columns(3, |columns| {
-                    if footer_button(&mut columns[0], can_export, "Save TXT").clicked() {
+                    if footer_button(&mut columns[0], can_export, "Save TXT")
+                        .on_hover_text(action_help("Save TXT"))
+                        .clicked()
+                    {
                         self.export_text();
                     }
-                    if footer_button(&mut columns[1], can_export, "Save PNG").clicked() {
+                    if footer_button(&mut columns[1], can_export, "Save PNG")
+                        .on_hover_text(action_help("Save PNG"))
+                        .clicked()
+                    {
                         self.export_png();
                     }
-                    if footer_button(&mut columns[2], can_export, "Stages").clicked() {
+                    if footer_button(&mut columns[2], can_export, "Stages")
+                        .on_hover_text(action_help("Stages"))
+                        .clicked()
+                    {
                         self.export_stages();
                     }
                 });
@@ -1193,6 +1692,9 @@ impl AaApp {
         ui.horizontal_wrapped(|ui| {
             preview_tab(ui, &mut self.preview_tab, PreviewTab::Compare);
             preview_tab(ui, &mut self.preview_tab, PreviewTab::Original);
+            if self.ai_lineart_texture.is_some() {
+                preview_tab(ui, &mut self.preview_tab, PreviewTab::AiLineart);
+            }
             preview_tab(ui, &mut self.preview_tab, PreviewTab::Lines);
             preview_tab(ui, &mut self.preview_tab, PreviewTab::Orientation);
             preview_tab(ui, &mut self.preview_tab, PreviewTab::Ascii);
@@ -1205,7 +1707,14 @@ impl AaApp {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.spinner();
-                let message = if self.batch_pending.is_some() {
+                let message = if let Some(progress) = &self.download_progress {
+                    format!(
+                        "Downloading {}... {} / {}",
+                        progress.model.label(),
+                        format_bytes(progress.downloaded),
+                        format_bytes(progress.total)
+                    )
+                } else if self.batch_pending.is_some() {
                     format!(
                         "Batch converting... {} saved, {} failed",
                         self.batch_done, self.batch_failed
@@ -1248,6 +1757,11 @@ impl AaApp {
                     self.empty_state(ui);
                 }
             }
+            PreviewTab::AiLineart => show_texture_or_stage_placeholder(
+                ui,
+                self.ai_lineart_texture.as_ref(),
+                "AI lineart preview pending",
+            ),
             PreviewTab::Lines => show_texture_or_stage_placeholder(
                 ui,
                 self.line_texture.as_ref(),
@@ -1273,20 +1787,35 @@ impl AaApp {
 
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
-            if action_button(ui, can_export, "Copy ASCII").clicked() {
+            if action_button(ui, can_export, "Copy ASCII")
+                .on_hover_text(action_help("Copy ASCII"))
+                .clicked()
+            {
                 self.copy_text(&ctx);
             }
-            if action_button(ui, can_export, "Copy Image").clicked() {
+            if action_button(ui, can_export, "Copy Image")
+                .on_hover_text(action_help("Copy Image"))
+                .clicked()
+            {
                 self.copy_image();
             }
             ui.add_space(6.0);
-            if action_button(ui, can_export, "Save TXT").clicked() {
+            if action_button(ui, can_export, "Save TXT")
+                .on_hover_text(action_help("Save TXT"))
+                .clicked()
+            {
                 self.export_text();
             }
-            if action_button(ui, can_export, "Save PNG").clicked() {
+            if action_button(ui, can_export, "Save PNG")
+                .on_hover_text(action_help("Save PNG"))
+                .clicked()
+            {
                 self.export_png();
             }
-            if action_button(ui, can_export, "Save Stages").clicked() {
+            if action_button(ui, can_export, "Save Stages")
+                .on_hover_text(action_help("Stages"))
+                .clicked()
+            {
                 self.export_stages();
             }
         });
@@ -1386,7 +1915,11 @@ impl AaApp {
                     )
                     .fill(ACCENT)
                     .min_size(Vec2::new(150.0, 38.0));
-                    if ui.add(open_button).clicked() {
+                    if ui
+                        .add(open_button)
+                        .on_hover_text("Load an image and then press Convert in the left panel.")
+                        .clicked()
+                    {
                         let ctx = ui.ctx().clone();
                         self.open_image(&ctx);
                     }
@@ -1400,6 +1933,7 @@ impl eframe::App for AaApp {
         self.handle_dropped_files(ctx);
         self.poll_conversion(ctx);
         self.poll_batch_conversion(ctx);
+        self.poll_model_download(ctx);
 
         egui::SidePanel::left("controls")
             .resizable(false)
@@ -1436,7 +1970,7 @@ impl ProfilePreset {
             Self::ColorIllustration => "Illustration preset",
             Self::LineArt => "Fine Lines preset",
             Self::SoftGrid => "B2 Soft Grid preset",
-            Self::AiSketch => "AI Sketch Lines preset",
+            Self::AiSketch => "AI 1px Lines preset",
             Self::Custom => "Custom profile",
         }
     }
@@ -1444,7 +1978,169 @@ impl ProfilePreset {
 
 fn section_label(ui: &mut egui::Ui, label: &str) {
     ui.add_space(14.0);
-    ui.label(RichText::new(label).strong().color(SIDEBAR_TEXT));
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.label(RichText::new(label).strong().color(SIDEBAR_TEXT));
+        if let Some(help) = section_help(label) {
+            ui.add(
+                egui::Button::new(RichText::new("?").small().color(SIDEBAR_MUTED))
+                    .fill(Color32::from_rgb(38, 42, 44))
+                    .min_size(Vec2::new(20.0, 20.0)),
+            )
+            .on_hover_text(help);
+        }
+    });
+}
+
+fn section_help(label: &str) -> Option<&'static str> {
+    match label {
+        "Mode" => Some(
+            "Single converts one image for tuning. Batch applies the same settings to many images.",
+        ),
+        "Preset" => Some(
+            "Start with Illustration for color character art. Try AI 1px Lines when built-in line extraction is not clean enough.",
+        ),
+        "Line Extraction" => Some(
+            "Choose the line-art source first. Open Advanced tuning only when you want to adjust internal detection settings.",
+        ),
+        "ASCII Rendering" => {
+            Some("Tune how glyphs are chosen, placed, spaced, and rendered into ASCII output.")
+        }
+        _ => None,
+    }
+}
+
+fn control_caption(ui: &mut egui::Ui, label: &str, help: &str) {
+    ui.add_space(6.0);
+    ui.label(RichText::new(label).small().strong().color(SIDEBAR_MUTED))
+        .on_hover_text(help);
+}
+
+fn action_help(label: &str) -> &'static str {
+    match label {
+        "Copy ASCII" => "Copy the approximate text version to the clipboard.",
+        "Copy Image" => "Copy the rendered PNG-style ASCII preview to the clipboard.",
+        "Save TXT" => "Save the approximate ASCII text output as a .txt file.",
+        "Save PNG" => "Save the rendered ASCII image as a PNG file.",
+        "Stages" | "Save Stages" => {
+            "Export intermediate previews such as source lines, direction map, AI line art, and final ASCII."
+        }
+        _ => "Run this action on the current result.",
+    }
+}
+
+fn input_mode_label(mode: InputMode) -> &'static str {
+    match mode {
+        InputMode::ExtractStructureLines => "structure lines",
+        InputMode::TreatAsBinaryLines => "binary lines",
+        InputMode::TreatAsSoftLines => "soft lines",
+        InputMode::NormalizeAiLineart => "AI lineart 1px",
+    }
+}
+
+fn input_mode_help(mode: InputMode) -> &'static str {
+    match mode {
+        InputMode::ExtractStructureLines => {
+            "Use this for normal color illustrations or photos. The app first extracts structure lines from the image."
+        }
+        InputMode::TreatAsBinaryLines => {
+            "Use this when the input is already clean black-and-white line art. The app treats dark pixels as the target lines."
+        }
+        InputMode::TreatAsSoftLines => {
+            "Use this for gray, antialiased, or sketch-like line art. The app preserves soft stroke strength instead of forcing a hard binary cutoff."
+        }
+        InputMode::NormalizeAiLineart => {
+            "Use this after an AI line extractor. The AI line art is thresholded, cleaned, thinned to 1px structure, then matched with glyphs."
+        }
+    }
+}
+
+fn structure_mode_label(mode: StructureLineMode) -> &'static str {
+    match mode {
+        StructureLineMode::FlowDog => "ETF/FDoG-style",
+        StructureLineMode::ScharrMagnitude => "Scharr",
+    }
+}
+
+fn structure_mode_help(mode: StructureLineMode) -> &'static str {
+    match mode {
+        StructureLineMode::FlowDog => {
+            "Smoother contour extraction inspired by ETF/FDoG line drawing. Better for coherent anime outlines and hair flow."
+        }
+        StructureLineMode::ScharrMagnitude => {
+            "Sharper gradient edge detection. It reacts strongly to local contrast, so it can preserve crisp edges but may catch more texture noise."
+        }
+    }
+}
+
+fn thinning_mode_label(mode: ThinningMode) -> &'static str {
+    match mode {
+        ThinningMode::KmmK3mLookup => "KMM/K3M lookup",
+        ThinningMode::ZhangSuen => "Zhang-Suen",
+        ThinningMode::GuoHall => "Guo-Hall",
+    }
+}
+
+fn thinning_mode_help(mode: ThinningMode) -> &'static str {
+    match mode {
+        ThinningMode::KmmK3mLookup => {
+            "Paper-style thinning path used by the default line-art pipeline. Good first choice for clean line art."
+        }
+        ThinningMode::ZhangSuen => {
+            "Simple skeletonization baseline. Useful for comparison, but diagonal and curved lines can look more brittle."
+        }
+        ThinningMode::GuoHall => {
+            "Thinning used by the AI cleanup preset. Often behaves better on AI line-art masks with small gaps and branches."
+        }
+    }
+}
+
+fn placement_mode_label(mode: PlacementMode) -> &'static str {
+    match mode {
+        PlacementMode::PaperGreedy => "paper greedy",
+        PlacementMode::LeftToRight => "left to right",
+        PlacementMode::SoftGrid => "soft grid",
+    }
+}
+
+fn placement_mode_help(mode: PlacementMode) -> &'static str {
+    match mode {
+        PlacementMode::PaperGreedy => {
+            "Recommended placement mode. It recursively places high-scoring glyphs so the text follows the extracted line structure."
+        }
+        PlacementMode::LeftToRight => {
+            "Baseline comparison mode. It scans in reading order and is mostly useful for checking whether paper greedy is helping."
+        }
+        PlacementMode::SoftGrid => {
+            "B2-style grid matcher for soft sketch or AI line-art input. Try it when paper greedy looks too sparse or fragmented."
+        }
+    }
+}
+
+fn line_extractor_help(extractor: LineExtractorChoice) -> &'static str {
+    match extractor {
+        LineExtractorChoice::Classic => {
+            "Built-in line extraction. No model download required; best first choice for a portable, immediate conversion."
+        }
+        LineExtractorChoice::Ai(model) => model_help(model),
+    }
+}
+
+fn model_help(model: LineartModel) -> &'static str {
+    match model {
+        LineartModel::Informative => {
+            "Balanced AI line extraction. Good default when color illustrations have soft outlines."
+        }
+        LineartModel::Anime2Sketch => {
+            "Sketch-focused extractor. Often good for anime faces, hair, and character line art."
+        }
+        LineartModel::AnilinesBasic => {
+            "Cleaner AniLines option. Try this when Anime2Sketch keeps too much sketch noise."
+        }
+        LineartModel::AnilinesDetail => {
+            "More detailed AniLines option. Try this when thin hair or clothing lines disappear."
+        }
+    }
 }
 
 fn load_paper_config() -> Result<(AsciiConfig, PathBuf, usize), String> {
@@ -1478,22 +2174,150 @@ fn load_ai_sketch_config() -> Result<(AsciiConfig, PathBuf), String> {
 
 fn convert_and_save_batch_item(
     image_path: &Path,
-    font_path: &Path,
+    font_bytes: &[u8],
     config: &AsciiConfig,
+    line_extractor: LineExtractorChoice,
+    cleanup_preset: LineCleanupPreset,
+    lineart_session: Option<&mut LineartSession>,
     output_dir: &Path,
     index: usize,
-) -> Result<AsciiResult, String> {
-    let result = aa_core::convert_path(image_path, font_path, config)
-        .map_err(|err| format!("{}: {err}", compact_path(image_path)))?;
+) -> Result<ConversionOutput, String> {
+    let image =
+        image::open(image_path).map_err(|err| format!("{}: {err}", compact_path(image_path)))?;
+    let output = convert_loaded_image(
+        &image,
+        font_bytes,
+        config,
+        line_extractor,
+        cleanup_preset,
+        lineart_session,
+    )
+    .map_err(|err| format!("{}: {err}", compact_path(image_path)))?;
     fs::create_dir_all(output_dir).map_err(|err| err.to_string())?;
 
     let prefix = format!("{:03}-{}", index + 1, safe_file_stem(image_path));
-    save_ascii_png(&result, output_dir.join(format!("{prefix}-ascii.png")))
-        .map_err(|err| err.to_string())?;
-    save_ascii_text(&result, output_dir.join(format!("{prefix}-ascii.txt")))
-        .map_err(|err| err.to_string())?;
+    save_ascii_png(
+        &output.result,
+        output_dir.join(format!("{prefix}-ascii.png")),
+    )
+    .map_err(|err| err.to_string())?;
+    save_ascii_text(
+        &output.result,
+        output_dir.join(format!("{prefix}-ascii.txt")),
+    )
+    .map_err(|err| err.to_string())?;
+    if let Some(ai_lineart) = &output.ai_lineart {
+        ai_lineart
+            .save(output_dir.join(format!("{prefix}-ai-lineart.png")))
+            .map_err(|err| err.to_string())?;
+    }
 
-    Ok(result)
+    Ok(output)
+}
+
+fn convert_single_item(
+    image_path: &Path,
+    font_path: &Path,
+    config: &AsciiConfig,
+    line_extractor: LineExtractorChoice,
+    cleanup_preset: LineCleanupPreset,
+) -> Result<ConversionOutput, String> {
+    let image = image::open(image_path).map_err(|err| format!("Image load failed: {err}"))?;
+    let font_bytes = fs::read(font_path).map_err(|err| format!("Font load failed: {err}"))?;
+    let mut lineart_session = load_lineart_session(line_extractor)?;
+    convert_loaded_image(
+        &image,
+        &font_bytes,
+        config,
+        line_extractor,
+        cleanup_preset,
+        lineart_session.as_mut(),
+    )
+    .map_err(|err| format!("Conversion failed: {err}"))
+}
+
+fn convert_loaded_image(
+    image: &DynamicImage,
+    font_bytes: &[u8],
+    config: &AsciiConfig,
+    line_extractor: LineExtractorChoice,
+    cleanup_preset: LineCleanupPreset,
+    lineart_session: Option<&mut LineartSession>,
+) -> Result<ConversionOutput, String> {
+    match line_extractor {
+        LineExtractorChoice::Classic => {
+            let result =
+                aa_core::convert_image(image, font_bytes, config).map_err(|err| err.to_string())?;
+            Ok(ConversionOutput {
+                result,
+                ai_lineart: None,
+            })
+        }
+        LineExtractorChoice::Ai(_) => {
+            let session =
+                lineart_session.ok_or_else(|| "Lineart model was not loaded.".to_owned())?;
+            let lineart = session.extract(image).map_err(|err| err.to_string())?;
+            let ai_lineart = gray_to_rgba(&lineart);
+            let mut config = config.clone();
+            apply_cleanup_preset_to_config(&mut config, cleanup_preset);
+            let result =
+                aa_core::convert_image(&DynamicImage::ImageLuma8(lineart), font_bytes, &config)
+                    .map_err(|err| err.to_string())?;
+            Ok(ConversionOutput {
+                result,
+                ai_lineart: Some(ai_lineart),
+            })
+        }
+    }
+}
+
+fn load_lineart_session(
+    line_extractor: LineExtractorChoice,
+) -> Result<Option<LineartSession>, String> {
+    let LineExtractorChoice::Ai(model) = line_extractor else {
+        return Ok(None);
+    };
+    let manager = ModelManager::new().map_err(|err| err.to_string())?;
+    let path = manager
+        .path_for_model(model)
+        .map_err(|err| err.to_string())?;
+    LineartSession::new(model, &path)
+        .map(Some)
+        .map_err(|err| err.to_string())
+}
+
+fn apply_cleanup_preset_to_config(config: &mut AsciiConfig, cleanup: LineCleanupPreset) {
+    config.input_mode = InputMode::NormalizeAiLineart;
+    config.thinning_mode = ThinningMode::GuoHall;
+    config.placement_mode = PlacementMode::PaperGreedy;
+    config.stroke_tolerance = false;
+    match cleanup {
+        LineCleanupPreset::Balanced => {
+            config.edge_threshold = 0.14;
+            config.binary_threshold = 0.42;
+            config.min_component_pixels = 4;
+            config.short_branch_prune_px = 4;
+        }
+        LineCleanupPreset::Delicate => {
+            config.edge_threshold = 0.08;
+            config.binary_threshold = 0.30;
+            config.min_component_pixels = 1;
+            config.short_branch_prune_px = 2;
+        }
+        LineCleanupPreset::Clean => {
+            config.edge_threshold = 0.20;
+            config.binary_threshold = 0.58;
+            config.min_component_pixels = 8;
+            config.short_branch_prune_px = 8;
+        }
+    }
+}
+
+fn gray_to_rgba(gray: &GrayImage) -> RgbaImage {
+    RgbaImage::from_fn(gray.width(), gray.height(), |x, y| {
+        let value = gray.get_pixel(x, y)[0];
+        Rgba([value, value, value, 255])
+    })
 }
 
 fn collect_folder_images(folder: &Path) -> Vec<PathBuf> {
@@ -1607,6 +2431,7 @@ impl PreviewTab {
         match self {
             Self::Compare => "Compare",
             Self::Original => "Original",
+            Self::AiLineart => "AI Lineart",
             Self::Lines => "Lines",
             Self::Orientation => "Direction",
             Self::Ascii => "ASCII",
@@ -1617,8 +2442,23 @@ impl PreviewTab {
     fn button_width(self) -> f32 {
         match self {
             Self::Compare | Self::Original => 88.0,
+            Self::AiLineart => 98.0,
             Self::Orientation => 96.0,
             Self::Lines | Self::Ascii | Self::Text => 72.0,
+        }
+    }
+
+    fn help(self) -> &'static str {
+        match self {
+            Self::Compare => "Show the original image next to the rendered ASCII result.",
+            Self::Original => "Show only the loaded source image.",
+            Self::AiLineart => {
+                "Show the AI-extracted line art before 1px cleanup and ASCII placement."
+            }
+            Self::Lines => "Show the line image that the glyph matcher tries to follow.",
+            Self::Orientation => "Show estimated stroke directions used for glyph scoring.",
+            Self::Ascii => "Show the final rendered ASCII image.",
+            Self::Text => "Show the approximate plain-text ASCII output.",
         }
     }
 }
@@ -1636,11 +2476,13 @@ fn preview_tab(ui: &mut egui::Ui, selected: &mut PreviewTab, tab: PreviewTab) {
     } else {
         Color32::from_rgb(68, 70, 66)
     };
-    let response = ui.add(
-        egui::Button::new(RichText::new(label).small().color(text_color))
-            .fill(fill)
-            .min_size(Vec2::new(tab.button_width(), 28.0)),
-    );
+    let response = ui
+        .add(
+            egui::Button::new(RichText::new(label).small().color(text_color))
+                .fill(fill)
+                .min_size(Vec2::new(tab.button_width(), 28.0)),
+        )
+        .on_hover_text(tab.help());
     if response.clicked() {
         *selected = tab;
     }
@@ -1811,6 +2653,13 @@ fn compact_path(path: &Path) -> String {
         Some(parent) => format!("{parent}/{file_name}"),
         None => file_name.to_owned(),
     }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes == 0 {
+        return "0 MB".to_owned();
+    }
+    format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
 }
 
 fn file_name(path: &Path) -> String {

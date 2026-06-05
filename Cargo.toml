@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/aa-core", "crates/aa-egui", "crates/aa-cli", "crates/aa-wasm"]
+members = [
+    "crates/aa-core",
+    "crates/aa-egui",
+    "crates/aa-cli",
+    "crates/aa-wasm",
+    "crates/aa-lineart",
+]
 resolver = "2"
 
 [workspace.package]
@@ -15,12 +21,16 @@ egui = "0.33"
 fontdue = "0.9"
 image = { version = "0.25", default-features = false, features = ["bmp", "jpeg", "png", "tiff", "webp"] }
 imageproc = "0.25"
+ndarray = "0.17"
+ort = { version = "2.0.0-rc.12", features = ["ndarray"] }
 rayon = "1.11"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde-wasm-bindgen = "0.6"
 serde_bytes = "0.11"
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "2"
 ttf-parser = "0.25"
 wasm-bindgen = "0.2"

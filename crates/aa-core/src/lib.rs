@@ -49,6 +49,7 @@ pub enum InputMode {
     ExtractStructureLines,
     TreatAsBinaryLines,
     TreatAsSoftLines,
+    NormalizeAiLineart,
 }
 
 impl Default for InputMode {
@@ -73,6 +74,7 @@ impl Default for StructureLineMode {
 pub enum ThinningMode {
     KmmK3mLookup,
     ZhangSuen,
+    GuoHall,
 }
 
 impl Default for ThinningMode {
@@ -412,13 +414,17 @@ pub fn color_illustration_preset(font_bytes: &[u8]) -> Result<AsciiConfig, AaErr
 
 pub fn anime_sketch_paper_preset(font_bytes: &[u8]) -> Result<AsciiConfig, AaError> {
     let mut config = paper_preset(font_bytes)?;
-    config.input_mode = InputMode::TreatAsBinaryLines;
-    config.binary_threshold = 0.72;
-    config.thinning_mode = ThinningMode::KmmK3mLookup;
+    config.max_input_width = 512;
+    config.input_mode = InputMode::NormalizeAiLineart;
+    config.edge_threshold = 0.14;
+    config.binary_threshold = 0.42;
+    config.thinning_mode = ThinningMode::GuoHall;
     config.placement_mode = PlacementMode::PaperGreedy;
-    config.edge_threshold = 0.2;
+    config.gaussian_sigma = 0.55;
     config.score_cutoff = 0.0;
     config.stroke_tolerance = false;
+    config.min_component_pixels = 4;
+    config.short_branch_prune_px = 4;
     Ok(config)
 }
 
@@ -714,6 +720,7 @@ fn preprocess_image(image: &DynamicImage, config: &AsciiConfig) -> InkImage {
             thin_image(&cleaned, config.thinning_mode)
         }
         InputMode::TreatAsSoftLines => soft_line_probability(&gray),
+        InputMode::NormalizeAiLineart => normalize_ai_lineart(&gray, config),
     };
     postprocess_line_image(&thinned, config)
 }
@@ -751,6 +758,7 @@ fn thin_image(image: &InkImage, mode: ThinningMode) -> InkImage {
     match mode {
         ThinningMode::KmmK3mLookup => k3m_lookup_thinning(image),
         ThinningMode::ZhangSuen => zhang_suen_thinning(image),
+        ThinningMode::GuoHall => guo_hall_thinning(image),
     }
 }
 
@@ -769,6 +777,209 @@ fn threshold_binary(gray: &GrayImage, threshold: f32) -> InkImage {
         for x in 0..gray.width() {
             let luma = gray.get_pixel(x, y)[0] as f32 / 255.0;
             if luma < threshold {
+                output.set(x, y, 1.0);
+            }
+        }
+    }
+    output
+}
+
+fn normalize_ai_lineart(gray: &GrayImage, config: &AsciiConfig) -> InkImage {
+    const SCALE: u32 = 4;
+
+    let ink = gray_to_auto_ink(gray);
+    let high_width = gray.width().saturating_mul(SCALE).max(1);
+    let high_height = gray.height().saturating_mul(SCALE).max(1);
+    let high_ink = resize_ink(&ink, high_width, high_height, FilterType::CatmullRom);
+
+    let low = config
+        .edge_threshold
+        .min(config.binary_threshold)
+        .clamp(0.0, 1.0);
+    let high = config
+        .edge_threshold
+        .max(config.binary_threshold)
+        .clamp(0.0, 1.0);
+    let mut binary = hysteresis_threshold_ink(&high_ink, low, high);
+
+    if config.min_component_pixels > 0 {
+        binary = remove_small_components(
+            &binary,
+            (config.min_component_pixels as usize).saturating_mul(SCALE as usize * SCALE as usize),
+        );
+    }
+
+    binary = cross_close(&binary);
+    let mut skeleton = thin_image(&binary, config.thinning_mode);
+    if config.short_branch_prune_px > 0 {
+        skeleton = prune_short_branches_repeated(
+            &skeleton,
+            (config.short_branch_prune_px as usize).saturating_mul(SCALE as usize),
+            8,
+        );
+    }
+
+    let mut low_res = block_reduce_max(&skeleton, gray.width(), gray.height(), SCALE);
+    low_res = thin_image(&low_res, config.thinning_mode);
+    if config.short_branch_prune_px > 0 {
+        low_res = prune_short_branches_repeated(&low_res, config.short_branch_prune_px as usize, 5);
+    }
+
+    low_res
+}
+
+fn gray_to_auto_ink(gray: &GrayImage) -> InkImage {
+    let mean = gray
+        .pixels()
+        .map(|pixel| pixel[0] as f32 / 255.0)
+        .sum::<f32>()
+        / (gray.width() * gray.height()).max(1) as f32;
+    let invert = mean > 0.5;
+    let mut output = InkImage::new(gray.width(), gray.height());
+
+    for y in 0..gray.height() {
+        for x in 0..gray.width() {
+            let luma = gray.get_pixel(x, y)[0] as f32 / 255.0;
+            let ink = if invert { 1.0 - luma } else { luma };
+            output.set(x, y, ink);
+        }
+    }
+
+    output
+}
+
+fn resize_ink(input: &InkImage, width: u32, height: u32, filter: FilterType) -> InkImage {
+    let mut gray = GrayImage::new(input.width, input.height);
+    for y in 0..input.height {
+        for x in 0..input.width {
+            let value = (input.get(x as i32, y as i32) * 255.0)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+            gray.put_pixel(x, y, Luma([value]));
+        }
+    }
+
+    let resized = image::imageops::resize(&gray, width, height, filter);
+    let mut output = InkImage::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            output.set(x, y, resized.get_pixel(x, y)[0] as f32 / 255.0);
+        }
+    }
+    output
+}
+
+fn hysteresis_threshold_ink(input: &InkImage, low: f32, high: f32) -> InkImage {
+    let low = low.min(high).clamp(0.0, 1.0);
+    let high = high.max(low).clamp(0.0, 1.0);
+    let mut output = InkImage::new(input.width, input.height);
+    let mut queued = vec![false; input.ink.len()];
+    let mut queue = VecDeque::new();
+
+    for y in 0..input.height {
+        for x in 0..input.width {
+            if input.get(x as i32, y as i32) >= high {
+                let idx = input.idx(x, y);
+                output.set(x, y, 1.0);
+                queued[idx] = true;
+                queue.push_back((x, y));
+            }
+        }
+    }
+
+    while let Some((x, y)) = queue.pop_front() {
+        for oy in -1..=1 {
+            for ox in -1..=1 {
+                if ox == 0 && oy == 0 {
+                    continue;
+                }
+                let nx = x as i32 + ox;
+                let ny = y as i32 + oy;
+                if nx < 0 || ny < 0 || nx >= input.width as i32 || ny >= input.height as i32 {
+                    continue;
+                }
+
+                let nx = nx as u32;
+                let ny = ny as u32;
+                let idx = input.idx(nx, ny);
+                if queued[idx] || input.get(nx as i32, ny as i32) < low {
+                    continue;
+                }
+                output.set(nx, ny, 1.0);
+                queued[idx] = true;
+                queue.push_back((nx, ny));
+            }
+        }
+    }
+
+    output
+}
+
+fn cross_close(input: &InkImage) -> InkImage {
+    cross_erode(&cross_dilate(input))
+}
+
+fn cross_dilate(input: &InkImage) -> InkImage {
+    let mut output = InkImage::new(input.width, input.height);
+    for y in 0..input.height {
+        for x in 0..input.width {
+            let value = input.get(x as i32, y as i32) > 0.5
+                || input.get(x as i32 - 1, y as i32) > 0.5
+                || input.get(x as i32 + 1, y as i32) > 0.5
+                || input.get(x as i32, y as i32 - 1) > 0.5
+                || input.get(x as i32, y as i32 + 1) > 0.5;
+            if value {
+                output.set(x, y, 1.0);
+            }
+        }
+    }
+    output
+}
+
+fn cross_erode(input: &InkImage) -> InkImage {
+    let mut output = InkImage::new(input.width, input.height);
+    for y in 0..input.height {
+        for x in 0..input.width {
+            let value = input.get(x as i32, y as i32) > 0.5
+                && input.get(x as i32 - 1, y as i32) > 0.5
+                && input.get(x as i32 + 1, y as i32) > 0.5
+                && input.get(x as i32, y as i32 - 1) > 0.5
+                && input.get(x as i32, y as i32 + 1) > 0.5;
+            if value {
+                output.set(x, y, 1.0);
+            }
+        }
+    }
+    output
+}
+
+fn prune_short_branches_repeated(
+    input: &InkImage,
+    max_branch_pixels: usize,
+    iterations: usize,
+) -> InkImage {
+    let mut output = input.clone();
+    for _ in 0..iterations {
+        let next = prune_short_branches(&output, max_branch_pixels);
+        if next.ink == output.ink {
+            break;
+        }
+        output = next;
+    }
+    output
+}
+
+fn block_reduce_max(input: &InkImage, width: u32, height: u32, scale: u32) -> InkImage {
+    let mut output = InkImage::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            let mut value = 0.0f32;
+            for oy in 0..scale {
+                for ox in 0..scale {
+                    value = value.max(input.get((x * scale + ox) as i32, (y * scale + oy) as i32));
+                }
+            }
+            if value > 0.5 {
                 output.set(x, y, 1.0);
             }
         }
@@ -1544,6 +1755,75 @@ fn zhang_suen_thinning(input: &InkImage) -> InkImage {
     }
 
     image
+}
+
+fn guo_hall_thinning(input: &InkImage) -> InkImage {
+    let mut image = input.clone();
+    if image.width < 3 || image.height < 3 {
+        return image;
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for iteration in 0..2 {
+            let mut to_clear = Vec::new();
+
+            for y in 1..image.height - 1 {
+                for x in 1..image.width - 1 {
+                    if image.get(x as i32, y as i32) <= 0.0 {
+                        continue;
+                    }
+                    let p = eight_neighbors(&image, x as i32, y as i32);
+                    if should_clear_guo_hall(&p, iteration) {
+                        to_clear.push((x, y));
+                    }
+                }
+            }
+
+            if !to_clear.is_empty() {
+                changed = true;
+                for (x, y) in to_clear.drain(..) {
+                    image.set(x, y, 0.0);
+                }
+            }
+        }
+    }
+
+    image
+}
+
+fn should_clear_guo_hall(p: &[u8; 8], iteration: usize) -> bool {
+    let p2 = p[0];
+    let p3 = p[1];
+    let p4 = p[2];
+    let p5 = p[3];
+    let p6 = p[4];
+    let p7 = p[5];
+    let p8 = p[6];
+    let p9 = p[7];
+
+    let c = ((p2 == 0 && (p3 == 1 || p4 == 1)) as u8)
+        + ((p4 == 0 && (p5 == 1 || p6 == 1)) as u8)
+        + ((p6 == 0 && (p7 == 1 || p8 == 1)) as u8)
+        + ((p8 == 0 && (p9 == 1 || p2 == 1)) as u8);
+    if c != 1 {
+        return false;
+    }
+
+    let n1 = (p9 | p2) + (p3 | p4) + (p5 | p6) + (p7 | p8);
+    let n2 = (p2 | p3) + (p4 | p5) + (p6 | p7) + (p8 | p9);
+    let n = n1.min(n2);
+    if !(2..=3).contains(&n) {
+        return false;
+    }
+
+    let m = if iteration == 0 {
+        (p6 | p7 | (1 - p9)) & p8
+    } else {
+        (p2 | p3 | (1 - p5)) & p4
+    };
+    m == 0
 }
 
 fn eight_neighbors(image: &InkImage, x: i32, y: i32) -> [u8; 8] {
@@ -2798,6 +3078,35 @@ mod tests {
     }
 
     #[test]
+    fn hysteresis_keeps_connected_weak_ink_only() {
+        let mut input = InkImage::new(5, 1);
+        input.set(0, 0, 0.45);
+        input.set(1, 0, 0.18);
+        input.set(3, 0, 0.18);
+
+        let output = hysteresis_threshold_ink(&input, 0.12, 0.4);
+        assert_eq!(output.get(0, 0), 1.0);
+        assert_eq!(output.get(1, 0), 1.0);
+        assert_eq!(output.get(3, 0), 0.0);
+    }
+
+    #[test]
+    fn guo_hall_thins_a_thick_vertical_line() {
+        let mut input = InkImage::new(7, 7);
+        for y in 1..6 {
+            for x in 2..5 {
+                input.set(x, y, 1.0);
+            }
+        }
+
+        let output = guo_hall_thinning(&input);
+        for y in 1..6 {
+            let count = (0..7).filter(|x| output.get(*x, y) > 0.5).count();
+            assert!(count <= 2);
+        }
+    }
+
+    #[test]
     fn color_structure_edges_detect_color_boundaries() {
         let mut image = RgbaImage::from_pixel(24, 12, Rgba([220, 72, 72, 255]));
         for y in 0..12 {
@@ -2890,8 +3199,11 @@ mod tests {
 
         let font_bytes = std::fs::read(font_path).unwrap();
         let config = anime_sketch_paper_preset(&font_bytes).unwrap();
-        assert_eq!(config.input_mode, InputMode::TreatAsBinaryLines);
-        assert_eq!(config.thinning_mode, ThinningMode::KmmK3mLookup);
+        assert_eq!(config.input_mode, InputMode::NormalizeAiLineart);
+        assert_eq!(config.thinning_mode, ThinningMode::GuoHall);
+        assert_eq!(config.edge_threshold, 0.14);
+        assert_eq!(config.binary_threshold, 0.42);
+        assert_eq!(config.short_branch_prune_px, 4);
         assert_eq!(config.placement_mode, PlacementMode::PaperGreedy);
         assert_eq!(config.character_set.chars().count(), PAPER_CHARACTER_TARGET);
     }

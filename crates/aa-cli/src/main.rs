@@ -73,6 +73,7 @@ fn run_convert(mut args: impl Iterator<Item = String>) -> Result<(), String> {
         config.input_mode = match input_mode.as_str() {
             "binary" => InputMode::TreatAsBinaryLines,
             "soft" => InputMode::TreatAsSoftLines,
+            "ai-lineart" | "ai" => InputMode::NormalizeAiLineart,
             "structure" => InputMode::ExtractStructureLines,
             other => return Err(format!("unknown input mode: {other}")),
         };
@@ -160,7 +161,7 @@ fn run_bench(args: &[String]) -> Result<(), String> {
 
 fn print_help() {
     println!(
-        "aa-cli --input <image> --out <directory> [--font <ttf/otf>] [--preset paper|color|ai-sketch|soft-grid|default] [--input-mode structure|binary|soft] [--binary-threshold N] [--edge-threshold N] [--score-cutoff N]\n\
+        "aa-cli --input <image> --out <directory> [--font <ttf/otf>] [--preset paper|color|ai-sketch|soft-grid|default] [--input-mode structure|binary|soft|ai-lineart] [--binary-threshold N] [--edge-threshold N] [--score-cutoff N]\n\
          aa-cli bench run --manifest <manifest.json> --out <directory> [--font-profile saitamaar-16|noto-commercial-16|custom] [--font <ttf/otf>] [--font-license <txt>] [--algorithms density-grid,fixed-grid,left-to-right,paper-greedy,paper-greedy-kang,paper-greedy-kmm,paper-greedy-kang-kmm,paper-greedy-clean,paper-greedy-balanced,paper-greedy-pretty,paper-greedy-interval,paper-greedy-interval-clean,paper-greedy-interval-balanced,paper-greedy-postprune,paper-greedy-local-prune,illustration-current,illustration-density,illustration-density-prune,ours-current]"
     );
 }
