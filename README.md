@@ -40,7 +40,7 @@ The app presets are:
 
 - `Illustration`: default recommendation for color character illustrations. It
   still renders monochrome ASCII art.
-- `AI 1px Lines`: uses a selected AI line extractor, normalizes the result into
+- `AI`: uses a selected AI line extractor, normalizes the result into
   thin binary strokes, then renders ASCII art. Optional third-party AI models
   are installed from the verified AA Converter model mirror when first used.
   The desktop app stores installed models next to the executable under
@@ -49,6 +49,7 @@ The app presets are:
 - `Line Art`: clean black-and-white character line art.
 - `Fine Lines`: more aggressive line pickup for faint, thin, or detail-heavy
   line art.
+- `Soft Sketch`: softer sketch-style matching for faint or gray line art.
 
 Photos, heavily shaded paintings, complex backgrounds, and color-only details
 are not the primary target for this version.
@@ -80,7 +81,7 @@ Use the color illustration preset from the CLI:
 cargo run -p aa-cli -- --input path\to\input.png --out target\aa-color --preset color
 ```
 
-The app includes `Illustration`, `AI 1px Lines`, `Line Art`, and `Fine Lines`
+The app includes `Illustration`, `Line Art`, `Fine Lines`, `Soft Sketch`, and `AI`
 presets. CLI presets include `paper`, `color`, and `default`.
 
 The output directory contains:

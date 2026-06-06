@@ -473,7 +473,7 @@ impl AaApp {
         }
         self.profile = ProfilePreset::SoftGrid;
         self.line_extractor = LineExtractorChoice::Classic;
-        self.status = "B2 Soft Grid preset ready.".to_owned();
+        self.status = "Soft Sketch preset ready.".to_owned();
     }
 
     fn apply_ai_sketch_preset(&mut self) {
@@ -1025,15 +1025,15 @@ impl AaApp {
             {
                 self.apply_line_art_preset();
             }
-            if preset_button(ui, "B2 Soft Grid", self.profile == ProfilePreset::SoftGrid)
+            if preset_button(ui, "Soft Sketch", self.profile == ProfilePreset::SoftGrid)
                 .on_hover_text(
-                    "Alternative sketch-style matcher. Useful for soft AI line art when the default looks too sparse.",
+                    "Alternative sketch-style matcher for soft or faint line art.",
                 )
                 .clicked()
             {
                 self.apply_soft_grid_preset();
             }
-            if preset_button(ui, "AI 1px Lines", self.profile == ProfilePreset::AiSketch)
+            if preset_button(ui, "AI", self.profile == ProfilePreset::AiSketch)
                 .on_hover_text(
                     "Use an AI model to make line art first. Choose a model in Line Extraction, install it if needed, then Convert.",
                 )
@@ -1970,8 +1970,8 @@ impl ProfilePreset {
             Self::Paper => "Line Art preset",
             Self::ColorIllustration => "Illustration preset",
             Self::LineArt => "Fine Lines preset",
-            Self::SoftGrid => "B2 Soft Grid preset",
-            Self::AiSketch => "AI 1px Lines preset",
+            Self::SoftGrid => "Soft Sketch preset",
+            Self::AiSketch => "AI preset",
             Self::Custom => "Custom profile",
         }
     }
@@ -1999,7 +1999,7 @@ fn section_help(label: &str) -> Option<&'static str> {
             "Single converts one image for tuning. Batch applies the same settings to many images.",
         ),
         "Preset" => Some(
-            "Start with Illustration for color character art. Try AI 1px Lines when built-in line extraction is not clean enough.",
+            "Start with Illustration for color character art. Try AI when built-in line extraction is not clean enough.",
         ),
         "Line Extraction" => Some(
             "Choose the line-art source first. Open Advanced tuning only when you want to adjust internal detection settings.",
@@ -2113,7 +2113,7 @@ fn placement_mode_help(mode: PlacementMode) -> &'static str {
             "Baseline comparison mode. It scans in reading order and is mostly useful for checking whether paper greedy is helping."
         }
         PlacementMode::SoftGrid => {
-            "B2-style grid matcher for soft sketch or AI line-art input. Try it when paper greedy looks too sparse or fragmented."
+            "Softer grid matcher for sketch or AI line-art input. Try it when paper greedy looks too sparse or fragmented."
         }
     }
 }
