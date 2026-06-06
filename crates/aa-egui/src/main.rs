@@ -1053,6 +1053,7 @@ impl AaApp {
 
         section_label(ui, "Line Extraction");
         self.line_extractor_controls(ui);
+        self.line_source_mode_controls(ui);
         egui::CollapsingHeader::new(
             RichText::new("Advanced tuning  ?")
                 .small()
@@ -1464,7 +1465,9 @@ impl AaApp {
             })
             .response
             .on_hover_text(line_extractor_help(self.line_extractor));
+    }
 
+    fn line_source_mode_controls(&mut self, ui: &mut egui::Ui) {
         if matches!(self.line_extractor, LineExtractorChoice::Classic) {
             if self.config.input_mode == InputMode::NormalizeAiLineart {
                 self.config.input_mode = InputMode::ExtractStructureLines;
