@@ -345,7 +345,7 @@ impl AaApp {
                 model.label()
             )),
             _ => Some(format!(
-                "{} is not installed. Use Download model before converting.",
+                "{} is not installed. Use Install model before converting.",
                 model.label()
             )),
         }
@@ -382,7 +382,7 @@ impl AaApp {
             downloaded: 0,
             total: 0,
         });
-        self.status = format!("Starting {} download...", model.label());
+        self.status = format!("Starting {} install...", model.label());
     }
 
     fn open_font(&mut self) {
@@ -812,7 +812,7 @@ impl AaApp {
                         total,
                     });
                     self.status = format!(
-                        "Downloading {}: {} / {}",
+                        "Installing {}: {} / {}",
                         model.label(),
                         format_bytes(downloaded),
                         format_bytes(total)
@@ -828,7 +828,7 @@ impl AaApp {
                         }
                         Err(err) => {
                             self.refresh_model_availability();
-                            self.status = format!("{} download failed: {err}", model.label());
+                            self.status = format!("{} install failed: {err}", model.label());
                         }
                     }
                     break;
@@ -841,7 +841,7 @@ impl AaApp {
                 Err(TryRecvError::Disconnected) => {
                     self.download_progress = None;
                     self.refresh_model_availability();
-                    self.status = "Model download worker stopped unexpectedly.".to_owned();
+                    self.status = "Model install worker stopped unexpectedly.".to_owned();
                     break;
                 }
             }
@@ -1035,7 +1035,7 @@ impl AaApp {
             }
             if preset_button(ui, "AI 1px Lines", self.profile == ProfilePreset::AiSketch)
                 .on_hover_text(
-                    "Use an AI model to make line art first. Choose a model in Line Extraction, download it if needed, then Convert.",
+                    "Use an AI model to make line art first. Choose a model in Line Extraction, install it if needed, then Convert.",
                 )
                 .clicked()
             {
@@ -1094,6 +1094,9 @@ impl AaApp {
                     .changed()
                 {
                     self.profile = ProfilePreset::Custom;
+                    if self.config.input_mode == InputMode::NormalizeAiLineart {
+                        self.config.input_mode = InputMode::ExtractStructureLines;
+                    }
                 }
                 if ui
                     .selectable_value(
@@ -1187,63 +1190,6 @@ impl AaApp {
     }
 
     fn advanced_line_tuning_controls(&mut self, ui: &mut egui::Ui) {
-        control_caption(
-            ui,
-            "Input mode",
-            "How the current image should be interpreted before line detection.",
-        );
-        ComboBox::from_id_salt("input-mode")
-            .width(ui.available_width())
-            .selected_text(input_mode_label(self.config.input_mode))
-            .show_ui(ui, |ui| {
-                if ui
-                    .selectable_value(
-                        &mut self.config.input_mode,
-                        InputMode::ExtractStructureLines,
-                        input_mode_label(InputMode::ExtractStructureLines),
-                    )
-                    .on_hover_text(input_mode_help(InputMode::ExtractStructureLines))
-                    .changed()
-                {
-                    self.profile = ProfilePreset::Custom;
-                }
-                if ui
-                    .selectable_value(
-                        &mut self.config.input_mode,
-                        InputMode::TreatAsBinaryLines,
-                        input_mode_label(InputMode::TreatAsBinaryLines),
-                    )
-                    .on_hover_text(input_mode_help(InputMode::TreatAsBinaryLines))
-                    .changed()
-                {
-                    self.profile = ProfilePreset::Custom;
-                }
-                if ui
-                    .selectable_value(
-                        &mut self.config.input_mode,
-                        InputMode::TreatAsSoftLines,
-                        input_mode_label(InputMode::TreatAsSoftLines),
-                    )
-                    .on_hover_text(input_mode_help(InputMode::TreatAsSoftLines))
-                    .changed()
-                {
-                    self.profile = ProfilePreset::Custom;
-                }
-                if ui
-                    .selectable_value(
-                        &mut self.config.input_mode,
-                        InputMode::NormalizeAiLineart,
-                        input_mode_label(InputMode::NormalizeAiLineart),
-                    )
-                    .on_hover_text(input_mode_help(InputMode::NormalizeAiLineart))
-                    .changed()
-                {
-                    self.profile = ProfilePreset::Custom;
-                }
-            })
-            .response
-            .on_hover_text(input_mode_help(self.config.input_mode));
-
         control_caption(
             ui,
             "Structure",
@@ -1519,7 +1465,57 @@ impl AaApp {
             .response
             .on_hover_text(line_extractor_help(self.line_extractor));
 
-        if !matches!(self.line_extractor, LineExtractorChoice::Classic) {
+        if matches!(self.line_extractor, LineExtractorChoice::Classic) {
+            if self.config.input_mode == InputMode::NormalizeAiLineart {
+                self.config.input_mode = InputMode::ExtractStructureLines;
+            }
+
+            control_caption(
+                ui,
+                "Input mode",
+                "How the current image should be interpreted before line detection.",
+            );
+            ComboBox::from_id_salt("input-mode")
+                .width(ui.available_width())
+                .selected_text(input_mode_label(self.config.input_mode))
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_value(
+                            &mut self.config.input_mode,
+                            InputMode::ExtractStructureLines,
+                            input_mode_label(InputMode::ExtractStructureLines),
+                        )
+                        .on_hover_text(input_mode_help(InputMode::ExtractStructureLines))
+                        .changed()
+                    {
+                        self.profile = ProfilePreset::Custom;
+                    }
+                    if ui
+                        .selectable_value(
+                            &mut self.config.input_mode,
+                            InputMode::TreatAsBinaryLines,
+                            input_mode_label(InputMode::TreatAsBinaryLines),
+                        )
+                        .on_hover_text(input_mode_help(InputMode::TreatAsBinaryLines))
+                        .changed()
+                    {
+                        self.profile = ProfilePreset::Custom;
+                    }
+                    if ui
+                        .selectable_value(
+                            &mut self.config.input_mode,
+                            InputMode::TreatAsSoftLines,
+                            input_mode_label(InputMode::TreatAsSoftLines),
+                        )
+                        .on_hover_text(input_mode_help(InputMode::TreatAsSoftLines))
+                        .changed()
+                    {
+                        self.profile = ProfilePreset::Custom;
+                    }
+                })
+                .response
+                .on_hover_text(input_mode_help(self.config.input_mode));
+        } else {
             control_caption(
                 ui,
                 "1px cleanup",
@@ -1583,10 +1579,10 @@ impl AaApp {
                             !self.is_busy(),
                             egui::Button::new(match self.selected_model_status() {
                                 Some(ModelStatus::Corrupt { .. }) => "Repair model",
-                                _ => "Download model",
+                                _ => "Install model",
                             }),
                         )
-                        .on_hover_text("Download this AI line-art model into the models folder next to the app. If that folder is not writable, the app reports an error instead of saving elsewhere.")
+                        .on_hover_text("Install this verified third-party model mirror into the models folder next to the app. See THIRD_PARTY_NOTICES.md for source and license details.")
                         .clicked()
                 {
                     self.start_model_download(model);
@@ -1612,7 +1608,9 @@ impl AaApp {
                     egui::Label::new(RichText::new(&self.status).small().color(SIDEBAR_TEXT))
                         .wrap(),
                 )
-                .on_hover_text("Current app status. Errors and download progress appear here.");
+                .on_hover_text(
+                    "Current app status. Errors and model install progress appear here.",
+                );
 
                 ui.add_space(8.0);
                 let convert_fill = if running {
@@ -1709,7 +1707,7 @@ impl AaApp {
                 ui.spinner();
                 let message = if let Some(progress) = &self.download_progress {
                     format!(
-                        "Downloading {}... {} / {}",
+                        "Installing {}... {} / {}",
                         progress.model.label(),
                         format_bytes(progress.downloaded),
                         format_bytes(progress.total)
@@ -2120,7 +2118,7 @@ fn placement_mode_help(mode: PlacementMode) -> &'static str {
 fn line_extractor_help(extractor: LineExtractorChoice) -> &'static str {
     match extractor {
         LineExtractorChoice::Classic => {
-            "Built-in line extraction. No model download required; best first choice for a portable, immediate conversion."
+            "Built-in line extraction. No model install required; best first choice for a portable, immediate conversion."
         }
         LineExtractorChoice::Ai(model) => model_help(model),
     }

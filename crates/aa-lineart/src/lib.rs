@@ -20,7 +20,7 @@ pub enum LineartError {
     #[error("I/O failed: {0}")]
     Io(#[from] std::io::Error),
     #[error(
-        "model download folder is not writable: {path}. Move AA Converter to a writable folder and try again. ({source})"
+        "model install folder is not writable: {path}. Move AA Converter to a writable folder and try again. ({source})"
     )]
     DownloadDirectory {
         path: PathBuf,
@@ -28,10 +28,10 @@ pub enum LineartError {
         source: std::io::Error,
     },
     #[error(
-        "model download folder is unavailable because the executable path could not be determined"
+        "model install folder is unavailable because the executable path could not be determined"
     )]
     DownloadDirectoryUnavailable,
-    #[error("model download failed: {0}")]
+    #[error("model install failed: {0}")]
     Download(#[from] reqwest::Error),
     #[error("model {0} was not found")]
     UnknownModel(String),
@@ -62,10 +62,25 @@ pub struct ModelEntry {
     pub filename: String,
     pub sha256: String,
     pub size: u64,
-    pub download_url: String,
+    pub install: ModelInstall,
     pub preprocess: PreprocessKind,
     pub license_name: String,
+    pub license_url: String,
     pub source_url: String,
+    pub upstream_model_url: String,
+    pub redistribution_basis: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ModelInstall {
+    pub method: ModelInstallMethod,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelInstallMethod {
+    DirectMirror,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -304,7 +319,7 @@ impl ModelManager {
         let client = reqwest::blocking::Client::builder()
             .user_agent(USER_AGENT)
             .build()?;
-        let mut response = client.get(&entry.download_url).send()?.error_for_status()?;
+        let mut response = client.get(&entry.install.url).send()?.error_for_status()?;
         let total = response.content_length().unwrap_or(entry.size);
         progress(DownloadProgress {
             downloaded: 0,
@@ -735,6 +750,22 @@ mod tests {
         assert!(catalog.entry("anime2sketch").is_some());
         assert!(catalog.entry("anilines-basic").is_some());
         assert!(catalog.entry("anilines-detail").is_some());
+    }
+
+    #[test]
+    fn bundled_catalog_contains_install_metadata() {
+        let catalog = bundled_catalog().unwrap();
+        for entry in &catalog.models {
+            assert_eq!(entry.install.method, ModelInstallMethod::DirectMirror);
+            assert!(entry.install.url.starts_with(
+                "https://github.com/BK927/Ascii-Art-Converter/releases/download/third-party-models-v1/"
+            ));
+            assert!(entry.install.url.ends_with(&entry.filename));
+            assert!(!entry.license_url.is_empty());
+            assert!(!entry.source_url.is_empty());
+            assert!(!entry.upstream_model_url.is_empty());
+            assert!(!entry.redistribution_basis.is_empty());
+        }
     }
 
     #[test]

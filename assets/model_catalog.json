@@ -7,10 +7,16 @@
       "filename": "informative-drawings-line-art.onnx",
       "sha256": "1fef40b8f7126d827e30fbebccf95ae9b0b391795df926bf9366a821bad4f498",
       "size": 17193338,
-      "download_url": "https://github.com/BK927/Ascii-Art-Converter/releases/download/models-v1/informative-drawings-line-art.onnx",
+      "install": {
+        "method": "direct-mirror",
+        "url": "https://github.com/BK927/Ascii-Art-Converter/releases/download/third-party-models-v1/informative-drawings-line-art.onnx"
+      },
       "preprocess": "informative",
       "license_name": "MIT",
-      "source_url": "https://github.com/josephrocca/image-to-line-art-js"
+      "license_url": "https://github.com/josephrocca/image-to-line-art-js/blob/main/LICENSE",
+      "source_url": "https://github.com/josephrocca/image-to-line-art-js",
+      "upstream_model_url": "https://huggingface.co/rocca/informative-drawings-line-art-onnx",
+      "redistribution_basis": "MIT-licensed integration repository mirrors an ONNX conversion that is publicly hosted on Hugging Face; release notes and notices preserve upstream attribution."
     },
     {
       "id": "anime2sketch",
@@ -19,10 +25,16 @@
       "filename": "anime2sketch-default-512.onnx",
       "sha256": "26453ebc688c9b2fae4128b3d4f92d74a685af1d0d460e30dc069d053ea5d9c2",
       "size": 217690469,
-      "download_url": "https://github.com/BK927/Ascii-Art-Converter/releases/download/models-v1/anime2sketch-default-512.onnx",
+      "install": {
+        "method": "direct-mirror",
+        "url": "https://github.com/BK927/Ascii-Art-Converter/releases/download/third-party-models-v1/anime2sketch-default-512.onnx"
+      },
       "preprocess": "anime2sketch",
       "license_name": "MIT",
-      "source_url": "https://github.com/Mukosame/Anime2Sketch"
+      "license_url": "https://github.com/Mukosame/Anime2Sketch/blob/master/LICENSE",
+      "source_url": "https://github.com/Mukosame/Anime2Sketch",
+      "upstream_model_url": "https://drive.google.com/drive/folders/1Srf-WYUixK0wiUddc9y3pNKHHno5PN6R?usp=sharing",
+      "redistribution_basis": "Upstream README describes the repository as containing testing code and pretrained weights, provides model weight links, and releases the project under MIT."
     },
     {
       "id": "anilines-basic",
@@ -31,10 +43,16 @@
       "filename": "anilines-basic-dynamic.onnx",
       "sha256": "1b674ae9093e71e49289aca730e7fa3e2edd7b7bad5c23786c3a3b061d9a6f09",
       "size": 69070627,
-      "download_url": "https://github.com/BK927/Ascii-Art-Converter/releases/download/models-v1/anilines-basic-dynamic.onnx",
+      "install": {
+        "method": "direct-mirror",
+        "url": "https://github.com/BK927/Ascii-Art-Converter/releases/download/third-party-models-v1/anilines-basic-dynamic.onnx"
+      },
       "preprocess": "anilines-basic",
       "license_name": "MIT",
-      "source_url": "https://github.com/zhenglinpan/AniLines-Anime-Lineart-Extractor"
+      "license_url": "https://github.com/zhenglinpan/AniLines-Anime-Lineart-Extractor/blob/master/LICENSE",
+      "source_url": "https://github.com/zhenglinpan/AniLines-Anime-Lineart-Extractor",
+      "upstream_model_url": "https://drive.google.com/file/d/14Bp8mbQAbiR1rQrEsFp-uNdOou8hoCFr/view?usp=sharing",
+      "redistribution_basis": "Upstream README provides a pretrained Basic model link and states the project is licensed under MIT; this mirror hosts a converted ONNX artifact with attribution."
     },
     {
       "id": "anilines-detail",
@@ -43,10 +61,16 @@
       "filename": "anilines-detail-dynamic.onnx",
       "sha256": "2fee16b1756a7dd22f367035a7e29736da7149a90c0101aa5ce201fc2d53b5f4",
       "size": 69068323,
-      "download_url": "https://github.com/BK927/Ascii-Art-Converter/releases/download/models-v1/anilines-detail-dynamic.onnx",
+      "install": {
+        "method": "direct-mirror",
+        "url": "https://github.com/BK927/Ascii-Art-Converter/releases/download/third-party-models-v1/anilines-detail-dynamic.onnx"
+      },
       "preprocess": "anilines-detail",
       "license_name": "MIT",
-      "source_url": "https://github.com/zhenglinpan/AniLines-Anime-Lineart-Extractor"
+      "license_url": "https://github.com/zhenglinpan/AniLines-Anime-Lineart-Extractor/blob/master/LICENSE",
+      "source_url": "https://github.com/zhenglinpan/AniLines-Anime-Lineart-Extractor",
+      "upstream_model_url": "https://drive.google.com/file/d/12U1Mwlonoipk2Yvr12mNaFB30foy420o/view?usp=sharing",
+      "redistribution_basis": "Upstream README provides a pretrained Detail model link and states the project is licensed under MIT; this mirror hosts a converted ONNX artifact with attribution."
     }
   ]
 }

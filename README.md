@@ -23,7 +23,7 @@ Download the desktop app: [GitHub Releases](https://github.com/BK927/Ascii-Art-C
 - Rendered PNG output and approximate `.txt` output.
 - Single-image tuning and batch conversion.
 - Presets for color illustrations, clean line art, and fine-line input.
-- Desktop AI line-art extraction with in-app model download and selectable cleanup styles.
+- Desktop AI line-art extraction with in-app optional model install and selectable cleanup styles.
 - Bundled font profile intended for commercial-safe use.
 
 ## Recommended Inputs
@@ -41,9 +41,9 @@ The app presets are:
 - `Illustration`: default recommendation for color character illustrations. It
   still renders monochrome ASCII art.
 - `AI 1px Lines`: uses a selected AI line extractor, normalizes the result into
-  thin binary strokes, then renders ASCII art. AI models are downloaded from
-  the app when first used.
-  The desktop app stores downloaded models next to the executable under
+  thin binary strokes, then renders ASCII art. Optional third-party AI models
+  are installed from the verified AA Converter model mirror when first used.
+  The desktop app stores installed models next to the executable under
   `models/`. If that folder is not writable, the app shows an error instead of
   writing to another location.
 - `Line Art`: clean black-and-white character line art.
@@ -100,10 +100,11 @@ The desktop app exposes a few tuning controls:
 - `Line extractor`: use `Built-in extractor` for local structure lines, or
   choose `Informative`, `Anime2Sketch`, `AniLines Basic`, or `AniLines Detail`
   for AI line art.
-- `1px cleanup`: use `Balanced` first. `Delicate` keeps faint lines, while
-  `Clean` removes more noise.
-- `Input mode`: `structure lines` extracts lines from the image.
-  `binary lines` treats the input as already-clean black-and-white line art.
+- `Input mode`: shown for `Built-in extractor`. `structure lines` extracts
+  lines from the image, while `binary lines` treats the input as already-clean
+  black-and-white line art.
+- `1px cleanup`: shown for AI extractors. Use `Balanced` first. `Delicate`
+  keeps faint lines, while `Clean` removes more noise.
 - `Structure`: `ETF/FDoG-style` favors smoother, coherent contours. `Scharr`
   is sharper and more direct, but can pick up more noise.
 - `Thinning`: reduces extracted lines into thin strokes. `KMM/K3M lookup` is
