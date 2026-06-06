@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
@@ -82,6 +82,9 @@ struct AaApp {
     font_path: Option<PathBuf>,
     result: Option<AsciiResult>,
     pending: Option<Receiver<Result<ConversionOutput, String>>>,
+    compare_pending: Option<Receiver<CompareMessage>>,
+    compare_tiles: Vec<CompareTile>,
+    compare_progress: Option<CompareProgress>,
     original_texture: Option<TextureHandle>,
     ai_lineart_texture: Option<TextureHandle>,
     ai_lineart_preview: Option<RgbaImage>,
@@ -97,6 +100,7 @@ struct AaApp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PreviewTab {
     Compare,
+    Result,
     Original,
     AiLineart,
     Lines,
@@ -130,6 +134,66 @@ enum LineExtractorChoice {
 struct ConversionOutput {
     result: AsciiResult,
     ai_lineart: Option<RgbaImage>,
+}
+
+struct CompareTile {
+    label: String,
+    detail: String,
+    spec: CompareSpec,
+    state: CompareTileState,
+    texture: Option<TextureHandle>,
+    selection: Option<CompareSelection>,
+}
+
+#[derive(Clone)]
+struct CompareSelection {
+    config: AsciiConfig,
+    font_path: PathBuf,
+    profile: ProfilePreset,
+    line_extractor: LineExtractorChoice,
+    cleanup_preset: LineCleanupPreset,
+    result: AsciiResult,
+    ai_lineart: Option<RgbaImage>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompareSpec {
+    BuiltIn(ProfilePreset),
+    Ai {
+        model: LineartModel,
+        cleanup: LineCleanupPreset,
+    },
+}
+
+enum CompareTileState {
+    Pending,
+    Rendering,
+    Ready,
+    Skipped(String),
+    Error(String),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CompareProgress {
+    completed: usize,
+    total: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CompareJob {
+    index: usize,
+    spec: CompareSpec,
+}
+
+enum CompareMessage {
+    Started {
+        index: usize,
+    },
+    Finished {
+        index: usize,
+        result: Result<CompareSelection, String>,
+    },
+    FinishedAll,
 }
 
 enum BatchMessage {
@@ -214,6 +278,9 @@ impl AaApp {
             font_path,
             result: None,
             pending: None,
+            compare_pending: None,
+            compare_tiles: Vec::new(),
+            compare_progress: None,
             original_texture: None,
             ai_lineart_texture: None,
             ai_lineart_preview: None,
@@ -222,7 +289,7 @@ impl AaApp {
             ascii_texture: None,
             download_pending: None,
             download_progress: None,
-            preview_tab: PreviewTab::Compare,
+            preview_tab: PreviewTab::Result,
             status,
         }
     }
@@ -237,9 +304,12 @@ impl AaApp {
                 self.line_texture = None;
                 self.orientation_texture = None;
                 self.ascii_texture = None;
+                self.compare_pending = None;
+                self.compare_tiles.clear();
+                self.compare_progress = None;
                 self.result = None;
                 self.status = format!("Loaded {}", compact_path(&path));
-                self.preview_tab = PreviewTab::Compare;
+                self.preview_tab = PreviewTab::Result;
             }
             Err(err) => {
                 self.status = err;
@@ -432,25 +502,10 @@ impl AaApp {
     }
 
     fn apply_line_art_preset(&mut self) {
-        let (mut config, path) = match load_paper_config() {
-            Ok((config, path, _)) => (config, Some(path)),
+        let (config, path) = match load_fine_lines_config() {
+            Ok((config, path)) => (config, Some(path)),
             Err(_) => (self.config.clone(), self.font_path.clone()),
         };
-
-        config.max_input_width = 640;
-        config.font_px = 16.0;
-        config.stripe_stride_px = 16;
-        config.gaussian_sigma = 0.65;
-        config.edge_threshold = 0.2;
-        config.binary_threshold = 0.56;
-        config.mismatch_weight = 0.65;
-        config.match_weight = 1.05;
-        config.score_cutoff = -4.0;
-        config.glyph_alpha_threshold = 0.14;
-        config.input_mode = InputMode::ExtractStructureLines;
-        config.structure_line_mode = StructureLineMode::FlowDog;
-        config.thinning_mode = ThinningMode::KmmK3mLookup;
-        config.placement_mode = PlacementMode::PaperGreedy;
 
         self.config = config;
         if let Some(path) = path {
@@ -534,6 +589,52 @@ impl AaApp {
 
         self.pending = Some(receiver);
         self.status = "Converting...".to_owned();
+    }
+
+    fn run_compare_grid(&mut self) {
+        if self.is_busy() {
+            return;
+        }
+
+        if self.mode != WorkMode::Single {
+            self.status = "Compare is available in Single mode.".to_owned();
+            return;
+        }
+
+        let Some(image_path) = self.image_path.clone() else {
+            self.status = "Open an image first.".to_owned();
+            return;
+        };
+
+        self.refresh_model_availability();
+        let tiles = compare_tiles_for_availability(&self.model_availability);
+        let jobs: Vec<CompareJob> = tiles
+            .iter()
+            .enumerate()
+            .filter_map(|(index, tile)| match &tile.state {
+                CompareTileState::Pending => Some(CompareJob {
+                    index,
+                    spec: tile.spec,
+                }),
+                _ => None,
+            })
+            .collect();
+        let skipped = tiles.len().saturating_sub(jobs.len());
+        let total = tiles.len();
+
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            run_compare_worker(image_path, jobs, sender);
+        });
+
+        self.compare_tiles = tiles;
+        self.compare_progress = Some(CompareProgress {
+            completed: skipped,
+            total,
+        });
+        self.compare_pending = Some(receiver);
+        self.preview_tab = PreviewTab::Compare;
+        self.status = format!("Comparing {skipped}/{total} options...");
     }
 
     fn run_batch_conversion(&mut self) {
@@ -651,7 +752,10 @@ impl AaApp {
     }
 
     fn is_busy(&self) -> bool {
-        self.pending.is_some() || self.batch_pending.is_some() || self.download_pending.is_some()
+        self.pending.is_some()
+            || self.compare_pending.is_some()
+            || self.batch_pending.is_some()
+            || self.download_pending.is_some()
     }
 
     fn poll_conversion(&mut self, ctx: &egui::Context) {
@@ -695,7 +799,7 @@ impl AaApp {
                     result.stats.stripes
                 );
                 self.result = Some(result);
-                self.preview_tab = PreviewTab::Compare;
+                self.preview_tab = PreviewTab::Result;
             }
             Ok(Err(err)) => {
                 self.status = err;
@@ -706,6 +810,68 @@ impl AaApp {
             }
             Err(TryRecvError::Disconnected) => {
                 self.status = "Conversion worker stopped unexpectedly.".to_owned();
+            }
+        }
+    }
+
+    fn poll_compare_grid(&mut self, ctx: &egui::Context) {
+        let Some(receiver) = self.compare_pending.take() else {
+            return;
+        };
+
+        loop {
+            match receiver.try_recv() {
+                Ok(CompareMessage::Started { index }) => {
+                    if let Some(tile) = self.compare_tiles.get_mut(index) {
+                        tile.state = CompareTileState::Rendering;
+                    }
+                }
+                Ok(CompareMessage::Finished { index, result }) => {
+                    if let Some(progress) = &mut self.compare_progress {
+                        progress.completed = progress.completed.saturating_add(1);
+                    }
+                    if let Some(tile) = self.compare_tiles.get_mut(index) {
+                        match result {
+                            Ok(selection) => {
+                                tile.texture = Some(load_texture_from_rgba(
+                                    ctx,
+                                    &selection.result.ascii_preview,
+                                    &format!("compare-tile-{index}"),
+                                ));
+                                tile.selection = Some(selection);
+                                tile.state = CompareTileState::Ready;
+                            }
+                            Err(err) => {
+                                tile.texture = None;
+                                tile.selection = None;
+                                tile.state = CompareTileState::Error(err);
+                            }
+                        }
+                    }
+                    if let Some(progress) = self.compare_progress {
+                        self.status = format!(
+                            "Comparing {}/{} options...",
+                            progress.completed, progress.total
+                        );
+                    }
+                }
+                Ok(CompareMessage::FinishedAll) => {
+                    if let Some(progress) = self.compare_progress {
+                        self.status = format!("Compare ready: {} options checked.", progress.total);
+                    } else {
+                        self.status = "Compare ready.".to_owned();
+                    }
+                    break;
+                }
+                Err(TryRecvError::Empty) => {
+                    self.compare_pending = Some(receiver);
+                    ctx.request_repaint_after(Duration::from_millis(120));
+                    break;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    self.status = "Compare worker stopped unexpectedly.".to_owned();
+                    break;
+                }
             }
         }
     }
@@ -757,7 +923,7 @@ impl AaApp {
                         ));
                         self.image_path = Some(path.clone());
                         self.result = Some(result);
-                        self.preview_tab = PreviewTab::Compare;
+                        self.preview_tab = PreviewTab::Result;
                         self.status = format!(
                             "Batch converting {}/{}: saved {}",
                             index + 1,
@@ -1650,6 +1816,26 @@ impl AaApp {
                     }
                 }
 
+                if self.mode == WorkMode::Single {
+                    ui.add_space(6.0);
+                    let compare_button = egui::Button::new(
+                        RichText::new("Compare")
+                            .strong()
+                            .color(Color32::from_rgb(238, 242, 232)),
+                    )
+                    .fill(Color32::from_rgb(54, 62, 63))
+                    .min_size(Vec2::new(ui.available_width(), 34.0));
+                    if ui
+                        .add_enabled(!running && self.image_path.is_some(), compare_button)
+                        .on_hover_text(
+                            "Render a grid of built-in and installed AI line-art options for this image.",
+                        )
+                        .clicked()
+                    {
+                        self.run_compare_grid();
+                    }
+                }
+
                 ui.add_space(6.0);
                 let ctx = ui.ctx().clone();
                 ui.columns(2, |columns| {
@@ -1690,8 +1876,15 @@ impl AaApp {
     }
 
     fn preview(&mut self, ui: &mut egui::Ui) {
+        if self.mode != WorkMode::Single && self.preview_tab == PreviewTab::Compare {
+            self.preview_tab = PreviewTab::Result;
+        }
+
         ui.horizontal_wrapped(|ui| {
-            preview_tab(ui, &mut self.preview_tab, PreviewTab::Compare);
+            if self.mode == WorkMode::Single {
+                preview_tab(ui, &mut self.preview_tab, PreviewTab::Compare);
+            }
+            preview_tab(ui, &mut self.preview_tab, PreviewTab::Result);
             preview_tab(ui, &mut self.preview_tab, PreviewTab::Original);
             if self.ai_lineart_texture.is_some() {
                 preview_tab(ui, &mut self.preview_tab, PreviewTab::AiLineart);
@@ -1720,6 +1913,15 @@ impl AaApp {
                         "Batch converting... {} saved, {} failed",
                         self.batch_done, self.batch_failed
                     )
+                } else if self.compare_pending.is_some() {
+                    if let Some(progress) = self.compare_progress {
+                        format!(
+                            "Comparing options... {} / {}",
+                            progress.completed, progress.total
+                        )
+                    } else {
+                        "Comparing options...".to_owned()
+                    }
                 } else {
                     "Converting image...".to_owned()
                 };
@@ -1750,7 +1952,8 @@ impl AaApp {
         ui.separator();
         ui.add_space(8.0);
         match self.preview_tab {
-            PreviewTab::Compare => self.show_compare(ui),
+            PreviewTab::Compare => self.show_compare_grid(ui),
+            PreviewTab::Result => self.show_result_compare(ui),
             PreviewTab::Original => {
                 if let Some(texture) = self.original_texture.as_ref() {
                     show_texture(ui, texture);
@@ -1822,7 +2025,103 @@ impl AaApp {
         });
     }
 
-    fn show_compare(&mut self, ui: &mut egui::Ui) {
+    fn show_compare_grid(&mut self, ui: &mut egui::Ui) {
+        if self.compare_tiles.is_empty() {
+            stage_placeholder(
+                ui,
+                "Run Compare to preview built-in and installed AI options.",
+            );
+            return;
+        }
+
+        let available_width = ui.available_width().max(220.0);
+        let gap = 10.0;
+        let columns = ((available_width + gap) / 230.0).floor().max(1.0) as usize;
+        let tile_width = ((available_width - gap * (columns.saturating_sub(1) as f32))
+            / columns as f32)
+            .max(180.0);
+        let tile_size = Vec2::new(tile_width, 220.0);
+        let mut selected = None;
+
+        ScrollArea::vertical().show(ui, |ui| {
+            let mut index = 0usize;
+            while index < self.compare_tiles.len() {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    for _ in 0..columns {
+                        if index >= self.compare_tiles.len() {
+                            break;
+                        }
+                        if compare_tile(ui, &mut self.compare_tiles[index], tile_size) {
+                            selected = Some(index);
+                        }
+                        index += 1;
+                    }
+                });
+                ui.add_space(gap);
+            }
+        });
+
+        if let Some(index) = selected {
+            let ctx = ui.ctx().clone();
+            self.apply_compare_tile(&ctx, index);
+        }
+    }
+
+    fn apply_compare_tile(&mut self, ctx: &egui::Context, index: usize) {
+        let Some(selection) = self
+            .compare_tiles
+            .get(index)
+            .and_then(|tile| tile.selection.clone())
+        else {
+            return;
+        };
+
+        self.config = selection.config.clone();
+        self.font_path = Some(selection.font_path.clone());
+        self.profile = selection.profile;
+        self.line_extractor = selection.line_extractor;
+        self.cleanup_preset = selection.cleanup_preset;
+
+        if let Some(ai_lineart) = selection.ai_lineart.clone() {
+            self.ai_lineart_texture = Some(load_texture_from_rgba(
+                ctx,
+                &ai_lineart,
+                "compare-selected-ai-lineart",
+            ));
+            self.ai_lineart_preview = Some(ai_lineart);
+        } else {
+            self.ai_lineart_texture = None;
+            self.ai_lineart_preview = None;
+        }
+
+        let result = selection.result;
+        self.line_texture = Some(load_texture_from_rgba(
+            ctx,
+            &result.line_preview,
+            "compare-selected-lines",
+        ));
+        self.orientation_texture = Some(load_texture_from_rgba(
+            ctx,
+            &result.orientation_preview,
+            "compare-selected-orientation",
+        ));
+        self.ascii_texture = Some(load_texture_from_rgba(
+            ctx,
+            &result.ascii_preview,
+            "compare-selected-ascii",
+        ));
+        self.status = format!(
+            "{} applied | {:.2}s | {} glyphs",
+            self.profile.label(),
+            result.timings.total.as_secs_f32(),
+            result.stats.placed_glyphs
+        );
+        self.result = Some(result);
+        self.preview_tab = PreviewTab::Result;
+    }
+
+    fn show_result_compare(&mut self, ui: &mut egui::Ui) {
         if self.original_texture.is_none() && self.ascii_texture.is_none() {
             self.empty_state(ui);
             return;
@@ -1933,6 +2232,7 @@ impl eframe::App for AaApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_dropped_files(ctx);
         self.poll_conversion(ctx);
+        self.poll_compare_grid(ctx);
         self.poll_batch_conversion(ctx);
         self.poll_model_download(ctx);
 
@@ -2144,6 +2444,195 @@ fn model_help(model: LineartModel) -> &'static str {
     }
 }
 
+fn compare_tiles_for_availability(availability: &[ModelAvailability]) -> Vec<CompareTile> {
+    let mut tiles = vec![
+        compare_tile_for_spec(
+            "Illustration",
+            "Built-in",
+            CompareSpec::BuiltIn(ProfilePreset::ColorIllustration),
+            true,
+        ),
+        compare_tile_for_spec(
+            "Line Art",
+            "Built-in",
+            CompareSpec::BuiltIn(ProfilePreset::Paper),
+            true,
+        ),
+        compare_tile_for_spec(
+            "Fine Lines",
+            "Built-in",
+            CompareSpec::BuiltIn(ProfilePreset::LineArt),
+            true,
+        ),
+        compare_tile_for_spec(
+            "Soft Sketch",
+            "Built-in",
+            CompareSpec::BuiltIn(ProfilePreset::SoftGrid),
+            true,
+        ),
+    ];
+
+    for model in LineartModel::ALL {
+        let available = availability
+            .iter()
+            .find(|item| item.entry.id == model.id())
+            .map(|item| item.status.is_available())
+            .unwrap_or(false);
+        for cleanup in LineCleanupPreset::ALL {
+            tiles.push(compare_tile_for_spec(
+                &format!("{} · {}", model.label(), cleanup.label()),
+                "AI",
+                CompareSpec::Ai { model, cleanup },
+                available,
+            ));
+        }
+    }
+
+    tiles
+}
+
+fn compare_tile_for_spec(
+    label: &str,
+    detail: &str,
+    spec: CompareSpec,
+    renderable: bool,
+) -> CompareTile {
+    CompareTile {
+        label: label.to_owned(),
+        detail: detail.to_owned(),
+        spec,
+        state: if renderable {
+            CompareTileState::Pending
+        } else {
+            CompareTileState::Skipped("Install model first".to_owned())
+        },
+        texture: None,
+        selection: None,
+    }
+}
+
+fn run_compare_worker(image_path: PathBuf, jobs: Vec<CompareJob>, sender: Sender<CompareMessage>) {
+    let image = match image::open(&image_path) {
+        Ok(image) => image,
+        Err(err) => {
+            for job in jobs {
+                let _ = sender.send(CompareMessage::Finished {
+                    index: job.index,
+                    result: Err(format!("Image load failed: {err}")),
+                });
+            }
+            let _ = sender.send(CompareMessage::FinishedAll);
+            return;
+        }
+    };
+
+    let mut lineart_cache: Vec<(LineartModel, GrayImage, RgbaImage)> = Vec::new();
+    for job in jobs {
+        let _ = sender.send(CompareMessage::Started { index: job.index });
+        let result = render_compare_job(&image, job.spec, &mut lineart_cache);
+        let _ = sender.send(CompareMessage::Finished {
+            index: job.index,
+            result,
+        });
+    }
+    let _ = sender.send(CompareMessage::FinishedAll);
+}
+
+fn render_compare_job(
+    image: &DynamicImage,
+    spec: CompareSpec,
+    lineart_cache: &mut Vec<(LineartModel, GrayImage, RgbaImage)>,
+) -> Result<CompareSelection, String> {
+    match spec {
+        CompareSpec::BuiltIn(profile) => render_builtin_compare(image, profile),
+        CompareSpec::Ai { model, cleanup } => {
+            render_ai_compare(image, model, cleanup, lineart_cache)
+        }
+    }
+}
+
+fn render_builtin_compare(
+    image: &DynamicImage,
+    profile: ProfilePreset,
+) -> Result<CompareSelection, String> {
+    let (config, font_path) = match profile {
+        ProfilePreset::ColorIllustration => load_color_config()?,
+        ProfilePreset::Paper => {
+            let (config, path, _) = load_paper_config()?;
+            (config, path)
+        }
+        ProfilePreset::LineArt => load_fine_lines_config()?,
+        ProfilePreset::SoftGrid => load_soft_grid_config()?,
+        ProfilePreset::AiSketch | ProfilePreset::Custom => {
+            return Err("Unsupported built-in compare preset.".to_owned());
+        }
+    };
+    let font_bytes = fs::read(&font_path).map_err(|err| format!("Font load failed: {err}"))?;
+    let result = aa_core::convert_image(image, &font_bytes, &config)
+        .map_err(|err| format!("Conversion failed: {err}"))?;
+    Ok(CompareSelection {
+        config,
+        font_path,
+        profile,
+        line_extractor: LineExtractorChoice::Classic,
+        cleanup_preset: LineCleanupPreset::Balanced,
+        result,
+        ai_lineart: None,
+    })
+}
+
+fn render_ai_compare(
+    image: &DynamicImage,
+    model: LineartModel,
+    cleanup: LineCleanupPreset,
+    lineart_cache: &mut Vec<(LineartModel, GrayImage, RgbaImage)>,
+) -> Result<CompareSelection, String> {
+    let (base_config, font_path) = load_ai_sketch_config()?;
+    let font_bytes = fs::read(&font_path).map_err(|err| format!("Font load failed: {err}"))?;
+    let (lineart, ai_lineart) = cached_ai_lineart(image, model, lineart_cache)?;
+    let mut config = base_config;
+    apply_cleanup_preset_to_config(&mut config, cleanup);
+    let result = aa_core::convert_image(
+        &DynamicImage::ImageLuma8(lineart.clone()),
+        &font_bytes,
+        &config,
+    )
+    .map_err(|err| format!("Conversion failed: {err}"))?;
+
+    Ok(CompareSelection {
+        config,
+        font_path,
+        profile: ProfilePreset::AiSketch,
+        line_extractor: LineExtractorChoice::Ai(model),
+        cleanup_preset: cleanup,
+        result,
+        ai_lineart: Some(ai_lineart),
+    })
+}
+
+fn cached_ai_lineart(
+    image: &DynamicImage,
+    model: LineartModel,
+    lineart_cache: &mut Vec<(LineartModel, GrayImage, RgbaImage)>,
+) -> Result<(GrayImage, RgbaImage), String> {
+    if let Some((_, lineart, rgba)) = lineart_cache
+        .iter()
+        .find(|(cached_model, _, _)| *cached_model == model)
+    {
+        return Ok((lineart.clone(), rgba.clone()));
+    }
+
+    let path = ModelManager::new()
+        .map_err(|err| err.to_string())?
+        .path_for_model(model)
+        .map_err(|err| err.to_string())?;
+    let mut session = LineartSession::new(model, &path).map_err(|err| err.to_string())?;
+    let lineart = session.extract(image).map_err(|err| err.to_string())?;
+    let rgba = gray_to_rgba(&lineart);
+    lineart_cache.push((model, lineart.clone(), rgba.clone()));
+    Ok((lineart, rgba))
+}
+
 fn load_paper_config() -> Result<(AsciiConfig, PathBuf, usize), String> {
     let path = find_paper_font().ok_or_else(|| "Saitamaar font asset was not found.".to_owned())?;
     let bytes = std::fs::read(&path).map_err(|err| err.to_string())?;
@@ -2156,6 +2645,25 @@ fn load_color_config() -> Result<(AsciiConfig, PathBuf), String> {
     let path = find_paper_font().ok_or_else(|| "Saitamaar font asset was not found.".to_owned())?;
     let bytes = std::fs::read(&path).map_err(|err| err.to_string())?;
     let config = color_illustration_preset(&bytes).map_err(|err| err.to_string())?;
+    Ok((config, path))
+}
+
+fn load_fine_lines_config() -> Result<(AsciiConfig, PathBuf), String> {
+    let (mut config, path, _) = load_paper_config()?;
+    config.max_input_width = 640;
+    config.font_px = 16.0;
+    config.stripe_stride_px = 16;
+    config.gaussian_sigma = 0.65;
+    config.edge_threshold = 0.2;
+    config.binary_threshold = 0.56;
+    config.mismatch_weight = 0.65;
+    config.match_weight = 1.05;
+    config.score_cutoff = -4.0;
+    config.glyph_alpha_threshold = 0.14;
+    config.input_mode = InputMode::ExtractStructureLines;
+    config.structure_line_mode = StructureLineMode::FlowDog;
+    config.thinning_mode = ThinningMode::KmmK3mLookup;
+    config.placement_mode = PlacementMode::PaperGreedy;
     Ok((config, path))
 }
 
@@ -2431,6 +2939,7 @@ impl PreviewTab {
     fn label(self) -> &'static str {
         match self {
             Self::Compare => "Compare",
+            Self::Result => "Result",
             Self::Original => "Original",
             Self::AiLineart => "AI Lineart",
             Self::Lines => "Lines",
@@ -2442,7 +2951,7 @@ impl PreviewTab {
 
     fn button_width(self) -> f32 {
         match self {
-            Self::Compare | Self::Original => 88.0,
+            Self::Compare | Self::Result | Self::Original => 88.0,
             Self::AiLineart => 98.0,
             Self::Orientation => 96.0,
             Self::Lines | Self::Ascii | Self::Text => 72.0,
@@ -2451,7 +2960,10 @@ impl PreviewTab {
 
     fn help(self) -> &'static str {
         match self {
-            Self::Compare => "Show the original image next to the rendered ASCII result.",
+            Self::Compare => {
+                "Show a grid of built-in and installed AI line-art options for this image."
+            }
+            Self::Result => "Show the original image next to the rendered ASCII result.",
             Self::Original => "Show only the loaded source image.",
             Self::AiLineart => {
                 "Show the AI-extracted line art before 1px cleanup and ASCII placement."
@@ -2486,6 +2998,122 @@ fn preview_tab(ui: &mut egui::Ui, selected: &mut PreviewTab, tab: PreviewTab) {
         .on_hover_text(tab.help());
     if response.clicked() {
         *selected = tab;
+    }
+}
+
+fn compare_tile(ui: &mut egui::Ui, tile: &mut CompareTile, tile_size: Vec2) -> bool {
+    let is_ready = matches!(tile.state, CompareTileState::Ready);
+    let sense = if is_ready {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(tile_size, sense);
+    let painter = ui.painter_at(rect);
+    let fill = if is_ready && response.hovered() {
+        Color32::from_rgb(236, 232, 222)
+    } else {
+        CANVAS_PANEL
+    };
+
+    painter.rect_filled(rect, 0.0, fill);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0, Color32::from_rgb(196, 192, 181)),
+        egui::StrokeKind::Inside,
+    );
+
+    let content = rect.shrink(10.0);
+    painter.text(
+        content.left_top(),
+        egui::Align2::LEFT_TOP,
+        &tile.label,
+        FontId::new(13.0, FontFamily::Proportional),
+        Color32::from_rgb(54, 58, 54),
+    );
+    painter.text(
+        content.left_top() + Vec2::new(0.0, 18.0),
+        egui::Align2::LEFT_TOP,
+        &tile.detail,
+        FontId::new(11.0, FontFamily::Proportional),
+        Color32::from_rgb(101, 105, 96),
+    );
+
+    let status = compare_tile_status_text(tile);
+    painter.text(
+        content.left_top() + Vec2::new(0.0, 36.0),
+        egui::Align2::LEFT_TOP,
+        status,
+        FontId::new(11.0, FontFamily::Proportional),
+        compare_tile_status_color(tile),
+    );
+
+    let image_rect = egui::Rect::from_min_max(
+        egui::pos2(content.left(), content.top() + 58.0),
+        content.right_bottom(),
+    );
+    painter.rect_filled(image_rect, 0.0, Color32::from_rgb(226, 222, 212));
+    painter.rect_stroke(
+        image_rect,
+        0.0,
+        Stroke::new(1.0, Color32::from_rgb(203, 199, 188)),
+        egui::StrokeKind::Inside,
+    );
+
+    if let Some(texture) = &tile.texture {
+        let image_size = fitted_size(texture.size_vec2(), image_rect.shrink(8.0).size(), false);
+        let draw_rect = egui::Rect::from_center_size(image_rect.center(), image_size);
+        painter.image(
+            texture.id(),
+            draw_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    } else {
+        painter.text(
+            image_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            compare_tile_placeholder(tile),
+            FontId::new(12.0, FontFamily::Proportional),
+            Color32::from_rgb(92, 91, 84),
+        );
+    }
+
+    is_ready && response.clicked()
+}
+
+fn compare_tile_status_text(tile: &CompareTile) -> String {
+    match &tile.state {
+        CompareTileState::Pending => "Pending".to_owned(),
+        CompareTileState::Rendering => "Rendering...".to_owned(),
+        CompareTileState::Ready => tile
+            .selection
+            .as_ref()
+            .map(|selection| format!("{:.2}s", selection.result.timings.total.as_secs_f32()))
+            .unwrap_or_else(|| "Ready".to_owned()),
+        CompareTileState::Skipped(reason) => reason.clone(),
+        CompareTileState::Error(err) => format!("Error: {err}"),
+    }
+}
+
+fn compare_tile_status_color(tile: &CompareTile) -> Color32 {
+    match &tile.state {
+        CompareTileState::Ready => ACCENT_STRONG,
+        CompareTileState::Error(_) => Color32::from_rgb(150, 70, 62),
+        CompareTileState::Skipped(_) => Color32::from_rgb(116, 111, 103),
+        CompareTileState::Rendering => Color32::from_rgb(103, 118, 82),
+        CompareTileState::Pending => Color32::from_rgb(108, 110, 102),
+    }
+}
+
+fn compare_tile_placeholder(tile: &CompareTile) -> &str {
+    match &tile.state {
+        CompareTileState::Pending => "Pending",
+        CompareTileState::Rendering => "Rendering",
+        CompareTileState::Ready => "Ready",
+        CompareTileState::Skipped(_) => "Skipped",
+        CompareTileState::Error(_) => "Failed",
     }
 }
 
