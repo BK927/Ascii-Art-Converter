@@ -3,8 +3,9 @@
 AA Converter can use third-party AI line extraction models when they are
 installed through the model manager.
 
-The app does not bundle these model files in the desktop package. Instead, it
-installs optional models from an AA Converter third-party model mirror:
+The app does not bundle these model files in the desktop package or web bundle.
+Instead, it installs optional models from an AA Converter third-party model
+mirror:
 
 https://github.com/BK927/Ascii-Art-Converter/releases/tag/third-party-models-v1
 

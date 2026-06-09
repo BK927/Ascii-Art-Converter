@@ -4,8 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "node ./scripts/sync-assets.mjs",
     "dev": "vite --host 127.0.0.1",
+    "prebuild": "node ./scripts/sync-assets.mjs",
     "build": "tsc && vite build",
+    "prepreview": "node ./scripts/sync-assets.mjs",
     "preview": "vite preview --host 127.0.0.1"
   },
   "devDependencies": {
@@ -13,6 +16,7 @@
     "vite": "^7.2.6"
   },
   "dependencies": {
-    "jszip": "^3.10.1"
+    "jszip": "^3.10.1",
+    "onnxruntime-web": "^1.26.0"
   }
 }

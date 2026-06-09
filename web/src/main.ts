@@ -1,8 +1,22 @@
 import "./styles.css";
 
+import {
+  allModelStatuses,
+  formatBytes,
+  installModel,
+  loadModelCatalog,
+  modelEntry,
+} from "./modelStore";
+import type { InstallProgress, ModelCatalog, ModelId, ModelStatus } from "./modelStore";
+
 type AppMode = "single" | "batch";
-type Preset = "clean" | "sensitive" | "color" | "soft" | "ai-sketch";
+type Preset = "clean" | "sensitive" | "color" | "soft" | "ai";
+type LineExtractorId = "builtin" | ModelId;
+type BuiltInInputMode = "structure" | "binary" | "soft";
+type CleanupPreset = "balanced" | "delicate" | "clean";
 type BatchStatus = "queued" | "running" | "done" | "error";
+type PreviewTab = "result" | "compare";
+type CompareTileState = "pending" | "rendering" | "ready" | "skipped" | "error";
 
 interface SourceImage {
   name: string;
@@ -31,7 +45,22 @@ interface ConvertOptions {
   match: number;
   cutoff: number;
   glyph_ink: number;
+  input_mode: "structure" | "binary" | "soft" | "ai";
+  structure_line_mode: "flowdog";
+  thinning_mode: "kmm" | "guo-hall";
+  placement_mode: "paper-greedy" | "soft-grid";
+  stroke_tolerance: boolean;
+  min_component_pixels: number;
+  short_branch_prune_px: number;
   character_set?: string;
+}
+
+interface ConversionSettings {
+  preset: Preset;
+  lineExtractor: LineExtractorId;
+  inputMode: BuiltInInputMode;
+  cleanupPreset: CleanupPreset;
+  options: ConvertOptions;
 }
 
 interface ConvertResult {
@@ -41,6 +70,9 @@ interface ConvertResult {
   ascii_rgba: Uint8Array | number[];
   line_rgba: Uint8Array | number[];
   orientation_rgba: Uint8Array | number[];
+  ai_line_rgba?: Uint8Array | number[];
+  ai_line_width?: number;
+  ai_line_height?: number;
   stats: {
     working_width: number;
     working_height: number;
@@ -56,13 +88,50 @@ interface ConvertResult {
 type WorkerMessage =
   | { type: "status"; id: number; message: string }
   | { type: "result"; id: number; result: ConvertResult }
-  | { type: "error"; id: number; error: string };
+  | { type: "error"; id: number; error: string }
+  | { type: "compare-started"; id: number; index: number }
+  | { type: "compare-status"; id: number; index: number; message: string }
+  | { type: "compare-result"; id: number; index: number; result: ConvertResult }
+  | { type: "compare-error"; id: number; index: number; error: string }
+  | { type: "compare-done"; id: number };
 
 interface PendingJob {
   resolve: (result: ConvertResult) => void;
   reject: (error: Error) => void;
   onStatus: (message: string) => void;
 }
+
+interface PendingCompare {
+  id: number;
+  resolve: () => void;
+  reject: (error: Error) => void;
+}
+
+interface CompareSelection {
+  preset: Preset;
+  lineExtractor: LineExtractorId;
+  inputMode: BuiltInInputMode;
+  cleanupPreset: CleanupPreset;
+  sliderValues: Record<string, string>;
+}
+
+interface CompareTile {
+  index: number;
+  label: string;
+  detail: string;
+  state: CompareTileState;
+  statusText: string;
+  selection: CompareSelection;
+  settings: ConversionSettings;
+  result?: ConvertResult;
+}
+
+interface CompareJob {
+  index: number;
+  settings: ConversionSettings;
+}
+
+const modelOrder: ModelId[] = ["informative", "anime2sketch", "anilines-basic", "anilines-detail"];
 
 const presetDefaults: Record<Preset, Record<string, string>> = {
   clean: {
@@ -113,7 +182,7 @@ const presetDefaults: Record<Preset, Record<string, string>> = {
     cutoff: "0",
     "glyph-ink": "0.14",
   },
-  "ai-sketch": {
+  ai: {
     "max-width": "512",
     "font-px": "16",
     "stripe-px": "16",
@@ -124,6 +193,30 @@ const presetDefaults: Record<Preset, Record<string, string>> = {
     mismatch: "0.65",
     cutoff: "0",
     "glyph-ink": "0.16",
+  },
+};
+
+const cleanupDefaults: Record<
+  CleanupPreset,
+  { edge: string; binary: string; minComponentPixels: number; shortBranchPrunePx: number }
+> = {
+  balanced: {
+    edge: "0.14",
+    binary: "0.42",
+    minComponentPixels: 4,
+    shortBranchPrunePx: 4,
+  },
+  delicate: {
+    edge: "0.08",
+    binary: "0.30",
+    minComponentPixels: 1,
+    shortBranchPrunePx: 2,
+  },
+  clean: {
+    edge: "0.20",
+    binary: "0.58",
+    minComponentPixels: 8,
+    shortBranchPrunePx: 8,
   },
 };
 
@@ -152,12 +245,26 @@ const statusEl = element<HTMLElement>("status");
 const convertingOverlay = element<HTMLElement>("converting-overlay");
 const convertingStage = element<HTMLElement>("converting-stage");
 const convertButton = element<HTMLButtonElement>("convert");
+const compareButton = element<HTMLButtonElement>("compare");
 const convertBatchButton = element<HTMLButtonElement>("convert-batch");
 const downloadBatchButton = element<HTMLButtonElement>("download-batch");
 const copyTextButton = element<HTMLButtonElement>("copy-text");
 const downloadPngButton = element<HTMLButtonElement>("download-png");
 const downloadTxtButton = element<HTMLButtonElement>("download-txt");
 const charactersInput = element<HTMLTextAreaElement>("characters");
+const lineExtractorSelect = element<HTMLSelectElement>("line-extractor");
+const inputModeSelect = element<HTMLSelectElement>("input-mode");
+const cleanupPresetSelect = element<HTMLSelectElement>("cleanup-preset");
+const inputModeRow = element<HTMLElement>("input-mode-row");
+const cleanupRow = element<HTMLElement>("cleanup-row");
+const modelManager = element<HTMLElement>("model-manager");
+const modelStatusLabel = element<HTMLElement>("model-status-label");
+const modelStatusDetail = element<HTMLElement>("model-status-detail");
+const installModelButton = element<HTMLButtonElement>("install-model");
+const resultView = element<HTMLElement>("result-view");
+const compareView = element<HTMLElement>("compare-view");
+const compareGrid = element<HTMLElement>("compare-grid");
+const compareProgress = element<HTMLElement>("compare-progress");
 const originalCanvas = element<HTMLCanvasElement>("original-canvas");
 const asciiCanvas = element<HTMLCanvasElement>("ascii-canvas");
 const lineCanvas = element<HTMLCanvasElement>("line-canvas");
@@ -168,14 +275,24 @@ const timingTotal = element<HTMLElement>("timing-total");
 const statsList = element<HTMLElement>("stats-list");
 
 let appMode: AppMode = "single";
+let previewTab: PreviewTab = "result";
 let sourceImage: SourceImage | null = null;
 let selectedPreset: Preset = "color";
+let selectedLineExtractor: LineExtractorId = "builtin";
+let selectedInputMode: BuiltInInputMode = "structure";
+let selectedCleanupPreset: CleanupPreset = "balanced";
+let modelCatalog: ModelCatalog | null = null;
+let modelStatuses = new Map<ModelId, ModelStatus>();
+let installingModel: ModelId | null = null;
+let installProgress: InstallProgress | null = null;
 let worker: Worker | null = null;
 let activeJobId = 0;
 let busy = false;
 let lastResult: ConvertResult | null = null;
 let batchItems: BatchItem[] = [];
 let nextBatchId = 1;
+let compareTiles: CompareTile[] = [];
+let pendingCompare: PendingCompare | null = null;
 
 const pendingJobs = new Map<number, PendingJob>();
 
@@ -187,6 +304,7 @@ setCanvasEmpty(lineCanvas);
 setCanvasEmpty(orientationCanvas);
 renderBatchList();
 setMode("single");
+void initializeModels();
 
 function wireControls(): void {
   fileInput.addEventListener("change", () => {
@@ -223,16 +341,33 @@ function wireControls(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>("[data-preset]")) {
-    button.addEventListener("click", () => {
-      const preset = button.dataset.preset as Preset;
-      selectPreset(preset);
+    button.addEventListener("click", () => selectPreset(button.dataset.preset as Preset));
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-preview-tab]")) {
+    button.addEventListener("click", () => setPreviewTab(button.dataset.previewTab as PreviewTab));
+  }
+
+  lineExtractorSelect.addEventListener("change", () => {
+    selectLineExtractor(lineExtractorSelect.value as LineExtractorId);
+  });
+  inputModeSelect.addEventListener("change", () => {
+    selectedInputMode = inputModeSelect.value as BuiltInInputMode;
+    syncControls();
+  });
+  cleanupPresetSelect.addEventListener("change", () => {
+    selectedCleanupPreset = cleanupPresetSelect.value as CleanupPreset;
+    applySliderValues(aiSliderDefaults(selectedCleanupPreset));
+    syncControls();
+  });
+
+  for (const spec of sliderSpecs) {
+    element<HTMLInputElement>(spec.input).addEventListener("input", () => {
+      syncSliderOutputs();
     });
   }
 
-  for (const spec of sliderSpecs) {
-    element<HTMLInputElement>(spec.input).addEventListener("input", syncSliderOutputs);
-  }
-
+  installModelButton.addEventListener("click", () => void installSelectedModel());
   addBatchButton.addEventListener("click", () => batchInput.click());
   clearBatchButton.addEventListener("click", clearBatch);
   batchList.addEventListener("click", (event) => {
@@ -248,7 +383,20 @@ function wireControls(): void {
     }
   });
 
+  compareGrid.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    const button = target.closest<HTMLButtonElement>("[data-compare-index]");
+    if (!button) {
+      return;
+    }
+    const tile = compareTiles[Number(button.dataset.compareIndex)];
+    if (tile?.state === "ready" && tile.result) {
+      applyCompareTile(tile);
+    }
+  });
+
   convertButton.addEventListener("click", () => void runSingleConvert());
+  compareButton.addEventListener("click", () => void runCompare());
   convertBatchButton.addEventListener("click", () => void runBatchConvert());
   downloadBatchButton.addEventListener("click", () => void downloadBatchZip());
   copyTextButton.addEventListener("click", () => void copyText());
@@ -256,8 +404,31 @@ function wireControls(): void {
   downloadTxtButton.addEventListener("click", () => downloadTxt());
 }
 
+async function initializeModels(): Promise<void> {
+  try {
+    modelCatalog = await loadModelCatalog(import.meta.env.BASE_URL);
+    renderLineExtractorOptions();
+    modelStatuses = await allModelStatuses(modelCatalog);
+    syncControls();
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error), true);
+  }
+}
+
+function renderLineExtractorOptions(): void {
+  lineExtractorSelect.replaceChildren();
+  lineExtractorSelect.append(new Option("Built-in extractor", "builtin"));
+  if (!modelCatalog) {
+    return;
+  }
+  for (const id of modelOrder) {
+    const entry = modelEntry(modelCatalog, id);
+    lineExtractorSelect.append(new Option(entry.name, id));
+  }
+}
+
 function setMode(mode: AppMode): void {
-  if (busy) {
+  if (isBusy()) {
     return;
   }
 
@@ -265,10 +436,25 @@ function setMode(mode: AppMode): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>("[data-mode]")) {
     button.classList.toggle("selected", button.dataset.mode === mode);
   }
+  if (mode === "batch" && previewTab === "compare") {
+    setPreviewTab("result");
+  }
   setHidden(".single-only, .single-action", mode !== "single");
   setHidden(".batch-only, .batch-action", mode !== "batch");
   setStatus(mode === "batch" ? "Batch ready" : "Ready");
-  updateButtons();
+  syncControls();
+}
+
+function setPreviewTab(tab: PreviewTab): void {
+  if (tab === "compare" && appMode !== "single") {
+    tab = "result";
+  }
+  previewTab = tab;
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-preview-tab]")) {
+    button.classList.toggle("selected", button.dataset.previewTab === tab);
+  }
+  resultView.hidden = tab !== "result";
+  compareView.hidden = tab !== "compare";
 }
 
 async function loadSingleFile(file: File): Promise<void> {
@@ -276,18 +462,17 @@ async function loadSingleFile(file: File): Promise<void> {
     setStatus("Reading image");
     sourceImage = await sourceFromFile(file);
     lastResult = null;
+    compareTiles = [];
 
     renderRgba(originalCanvas, sourceImage.rgba, sourceImage.width, sourceImage.height);
     originalSize.textContent = `${sourceImage.width} x ${sourceImage.height}`;
     fileMeta.textContent = `${file.name} · ${sourceImage.width}x${sourceImage.height}`;
-    setCanvasEmpty(asciiCanvas);
-    setCanvasEmpty(lineCanvas);
-    setCanvasEmpty(orientationCanvas);
-    asciiSize.textContent = "-";
-    timingTotal.textContent = "-";
-    renderStats(null);
+    clearResultPreview();
+    compareProgress.textContent = "Run Compare to render candidates.";
+    renderCompareGrid();
+    setPreviewTab("result");
     setStatus("Ready");
-    updateButtons();
+    syncControls();
   } catch (error) {
     setStatus(error instanceof Error ? error.message : String(error), true);
   }
@@ -296,7 +481,7 @@ async function loadSingleFile(file: File): Promise<void> {
 async function addBatchFiles(files: File[]): Promise<void> {
   busy = true;
   setStatus(`Reading ${files.length} image${files.length === 1 ? "" : "s"}`);
-  updateButtons();
+  syncControls();
 
   for (const file of files) {
     try {
@@ -320,7 +505,7 @@ async function addBatchFiles(files: File[]): Promise<void> {
   busy = false;
   renderBatchList();
   setStatus(`${batchItems.filter((item) => item.source).length} image(s) queued`);
-  updateButtons();
+  syncControls();
 }
 
 async function sourceFromFile(file: File): Promise<SourceImage> {
@@ -341,8 +526,40 @@ async function sourceFromFile(file: File): Promise<SourceImage> {
   };
 }
 
+async function installSelectedModel(): Promise<void> {
+  if (!modelCatalog || selectedLineExtractor === "builtin" || isBusy()) {
+    return;
+  }
+
+  const entry = modelEntry(modelCatalog, selectedLineExtractor);
+  installingModel = selectedLineExtractor;
+  installProgress = null;
+  setStatus(`Installing ${entry.name}`);
+  syncControls();
+
+  try {
+    await installModel(entry, (progress) => {
+      installProgress = progress;
+      setStatus(
+        `Installing ${entry.name}: ${progress.percent.toFixed(0)}% (${formatBytes(
+          progress.downloaded,
+        )}/${formatBytes(progress.total)})`,
+      );
+      syncControls();
+    });
+    modelStatuses = await allModelStatuses(modelCatalog);
+    setStatus(`${entry.name} installed`);
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    installingModel = null;
+    installProgress = null;
+    syncControls();
+  }
+}
+
 async function runSingleConvert(): Promise<void> {
-  if (!sourceImage || busy) {
+  if (!sourceImage || isBusy() || !canUseCurrentSettings()) {
     return;
   }
 
@@ -351,26 +568,64 @@ async function runSingleConvert(): Promise<void> {
   setStatus("Preparing image");
   setConvertingStage("Preparing image");
   setBusyVisual(true);
-  updateButtons();
+  syncControls();
 
   try {
-    const result = await convertSource(sourceImage, (message) => {
+    const result = await convertSource(sourceImage, currentSettings(), (message) => {
       setStatus(message);
       setConvertingStage(message);
     });
     showResult(sourceImage, result);
+    setPreviewTab("result");
     setStatus("Converted");
   } catch (error) {
     setStatus(error instanceof Error ? error.message : String(error), true);
   } finally {
     busy = false;
     setBusyVisual(false);
-    updateButtons();
+    syncControls();
+  }
+}
+
+async function runCompare(): Promise<void> {
+  if (!sourceImage || isBusy() || appMode !== "single") {
+    return;
+  }
+
+  compareTiles = buildCompareTiles();
+  renderCompareGrid();
+  setPreviewTab("compare");
+
+  const jobs: CompareJob[] = compareTiles
+    .filter((tile) => tile.state === "pending")
+    .map((tile) => ({ index: tile.index, settings: tile.settings }));
+  if (jobs.length === 0) {
+    compareProgress.textContent = "No renderable candidates.";
+    return;
+  }
+
+  busy = true;
+  setStatus(`Comparing 0/${jobs.length}`);
+  setBusyVisual(true);
+  syncControls();
+
+  try {
+    await compareSource(sourceImage, jobs);
+    const ready = compareTiles.filter((tile) => tile.state === "ready").length;
+    compareProgress.textContent = `${ready}/${compareTiles.length} candidates ready`;
+    setStatus("Compare complete");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    busy = false;
+    setBusyVisual(false);
+    pendingCompare = null;
+    syncControls();
   }
 }
 
 async function runBatchConvert(): Promise<void> {
-  if (busy) {
+  if (isBusy() || !canUseCurrentSettings()) {
     return;
   }
 
@@ -382,7 +637,7 @@ async function runBatchConvert(): Promise<void> {
 
   busy = true;
   setBusyVisual(true);
-  updateButtons();
+  syncControls();
 
   for (const item of runnable) {
     item.status = "queued";
@@ -391,6 +646,7 @@ async function runBatchConvert(): Promise<void> {
   }
   renderBatchList();
 
+  const settings = currentSettings();
   let converted = 0;
   let failed = 0;
   for (const [index, item] of runnable.entries()) {
@@ -405,7 +661,7 @@ async function runBatchConvert(): Promise<void> {
     setConvertingStage(`${index + 1}/${runnable.length}: ${item.name}`);
 
     try {
-      const result = await convertSource(source, (message) => {
+      const result = await convertSource(source, settings, (message) => {
         setStatus(`${message} · ${index + 1}/${runnable.length}`);
         setConvertingStage(`${index + 1}/${runnable.length}: ${message}`);
       });
@@ -424,10 +680,14 @@ async function runBatchConvert(): Promise<void> {
   busy = false;
   setBusyVisual(false);
   setStatus(`Batch complete: ${converted} converted${failed ? `, ${failed} failed` : ""}`);
-  updateButtons();
+  syncControls();
 }
 
-function convertSource(source: SourceImage, onStatus: (message: string) => void): Promise<ConvertResult> {
+function convertSource(
+  source: SourceImage,
+  settings: ConversionSettings,
+  onStatus: (message: string) => void,
+): Promise<ConvertResult> {
   return new Promise((resolve, reject) => {
     const id = ++activeJobId;
     pendingJobs.set(id, { resolve, reject, onStatus });
@@ -441,8 +701,27 @@ function convertSource(source: SourceImage, onStatus: (message: string) => void)
         imageRgba,
         imageWidth: source.width,
         imageHeight: source.height,
-        preset: selectedPreset,
-        options: readOptions(),
+        settings,
+      },
+      [imageRgba.buffer],
+    );
+  });
+}
+
+function compareSource(source: SourceImage, jobs: CompareJob[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const id = ++activeJobId;
+    pendingCompare = { id, resolve, reject };
+    const imageRgba = new Uint8Array(source.rgba);
+    ensureWorker().postMessage(
+      {
+        type: "compare",
+        id,
+        baseUrl: import.meta.env.BASE_URL,
+        imageRgba,
+        imageWidth: source.width,
+        imageHeight: source.height,
+        jobs,
       },
       [imageRgba.buffer],
     );
@@ -450,23 +729,55 @@ function convertSource(source: SourceImage, onStatus: (message: string) => void)
 }
 
 function handleWorkerMessage(event: MessageEvent<WorkerMessage>): void {
-  const job = pendingJobs.get(event.data.id);
-  if (!job) {
+  const message = event.data;
+  if (message.type === "status") {
+    const job = pendingJobs.get(message.id);
+    job?.onStatus(message.message);
     return;
   }
 
-  if (event.data.type === "status") {
-    job.onStatus(event.data.message);
+  if (message.type === "result" || message.type === "error") {
+    const job = pendingJobs.get(message.id);
+    if (job) {
+      pendingJobs.delete(message.id);
+      if (message.type === "error") {
+        job.reject(new Error(message.error));
+      } else {
+        job.resolve(message.result);
+      }
+      return;
+    }
+    if (pendingCompare?.id === message.id && message.type === "error") {
+      pendingCompare.reject(new Error(message.error));
+    }
     return;
   }
 
-  pendingJobs.delete(event.data.id);
-  if (event.data.type === "error") {
-    job.reject(new Error(event.data.error));
+  if (!pendingCompare || pendingCompare.id !== message.id) {
     return;
   }
 
-  job.resolve(event.data.result);
+  switch (message.type) {
+    case "compare-started":
+      updateCompareTile(message.index, { state: "rendering", statusText: "Rendering" });
+      break;
+    case "compare-status":
+      updateCompareTile(message.index, { statusText: message.message });
+      break;
+    case "compare-result":
+      updateCompareTile(message.index, {
+        state: "ready",
+        statusText: `${message.result.timings.total_ms.toFixed(0)} ms`,
+        result: message.result,
+      });
+      break;
+    case "compare-error":
+      updateCompareTile(message.index, { state: "error", statusText: message.error });
+      break;
+    case "compare-done":
+      pendingCompare.resolve();
+      break;
+  }
 }
 
 function ensureWorker(): Worker {
@@ -479,30 +790,252 @@ function ensureWorker(): Worker {
 
 function selectPreset(preset: Preset): void {
   selectedPreset = preset;
-  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-preset]")) {
-    button.classList.toggle("selected", button.dataset.preset === preset);
+  if (preset === "ai") {
+    if (selectedLineExtractor === "builtin") {
+      selectedLineExtractor = "informative";
+    }
+    selectedCleanupPreset = "balanced";
+    applySliderValues(aiSliderDefaults(selectedCleanupPreset));
+  } else {
+    selectedLineExtractor = "builtin";
+    selectedInputMode = preset === "soft" ? "soft" : "structure";
+    applySliderValues(presetDefaults[preset]);
   }
-  for (const [id, value] of Object.entries(presetDefaults[preset])) {
+  syncControls();
+}
+
+function selectLineExtractor(extractor: LineExtractorId): void {
+  selectedLineExtractor = extractor;
+  if (extractor === "builtin") {
+    if (selectedPreset === "ai") {
+      selectedPreset = "color";
+      selectedInputMode = "structure";
+      applySliderValues(presetDefaults.color);
+    }
+  } else {
+    selectedPreset = "ai";
+    applySliderValues(aiSliderDefaults(selectedCleanupPreset));
+  }
+  syncControls();
+}
+
+function currentSettings(): ConversionSettings {
+  return settingsFromSelection({
+    preset: selectedLineExtractor === "builtin" ? selectedPreset : "ai",
+    lineExtractor: selectedLineExtractor,
+    inputMode: selectedInputMode,
+    cleanupPreset: selectedCleanupPreset,
+    sliderValues: currentSliderValues(),
+  });
+}
+
+function settingsFromSelection(selection: CompareSelection): ConversionSettings {
+  return {
+    preset: selection.preset,
+    lineExtractor: selection.lineExtractor,
+    inputMode: selection.inputMode,
+    cleanupPreset: selection.cleanupPreset,
+    options: optionsFromValues(selection),
+  };
+}
+
+function optionsFromValues(selection: CompareSelection): ConvertOptions {
+  const isAi = selection.lineExtractor !== "builtin";
+  const cleanup = cleanupDefaults[selection.cleanupPreset];
+  const values = selection.sliderValues;
+  const characters = charactersInput.value.trim();
+  return {
+    max_width: numberFromValues(values, "max-width"),
+    font_px: numberFromValues(values, "font-px"),
+    stripe_px: numberFromValues(values, "stripe-px"),
+    blur: numberFromValues(values, "blur"),
+    edge: numberFromValues(values, "edge"),
+    binary: numberFromValues(values, "binary"),
+    match: numberFromValues(values, "match"),
+    mismatch: numberFromValues(values, "mismatch"),
+    cutoff: numberFromValues(values, "cutoff"),
+    glyph_ink: numberFromValues(values, "glyph-ink"),
+    input_mode: isAi ? "ai" : selection.inputMode,
+    structure_line_mode: "flowdog",
+    thinning_mode: isAi ? "guo-hall" : "kmm",
+    placement_mode: !isAi && selection.preset === "soft" ? "soft-grid" : "paper-greedy",
+    stroke_tolerance: !isAi && selection.preset === "color",
+    min_component_pixels: isAi ? cleanup.minComponentPixels : 0,
+    short_branch_prune_px: isAi ? cleanup.shortBranchPrunePx : 0,
+    ...(characters ? { character_set: charactersInput.value } : {}),
+  };
+}
+
+function numberFromValues(values: Record<string, string>, key: string): number {
+  return Number(values[key] ?? "0");
+}
+
+function buildCompareTiles(): CompareTile[] {
+  const tiles: CompareTile[] = [];
+  const builtIn: Array<[string, Preset, BuiltInInputMode]> = [
+    ["Illustration", "color", "structure"],
+    ["Line Art", "clean", "structure"],
+    ["Fine Lines", "sensitive", "structure"],
+    ["Soft Sketch", "soft", "soft"],
+  ];
+
+  for (const [label, preset, inputMode] of builtIn) {
+    const selection = {
+      preset,
+      lineExtractor: "builtin" as const,
+      inputMode,
+      cleanupPreset: "balanced" as const,
+      sliderValues: { ...presetDefaults[preset] },
+    };
+    tiles.push(compareTile(label, "Built-in", selection, true));
+  }
+
+  if (modelCatalog) {
+    for (const model of modelOrder) {
+      const entry = modelEntry(modelCatalog, model);
+      const installed = modelStatuses.get(model)?.kind === "installed";
+      for (const cleanup of ["delicate", "balanced", "clean"] as const) {
+        const selection = {
+          preset: "ai" as const,
+          lineExtractor: model,
+          inputMode: "structure" as const,
+          cleanupPreset: cleanup,
+          sliderValues: aiSliderDefaults(cleanup),
+        };
+        tiles.push(compareTile(`${entry.name} · ${cleanupLabel(cleanup)}`, "AI", selection, installed));
+      }
+    }
+  }
+
+  return tiles.map((tile, index) => ({ ...tile, index }));
+}
+
+function compareTile(
+  label: string,
+  detail: string,
+  selection: CompareSelection,
+  renderable: boolean,
+): CompareTile {
+  return {
+    index: 0,
+    label,
+    detail,
+    selection,
+    settings: settingsFromSelection(selection),
+    state: renderable ? "pending" : "skipped",
+    statusText: renderable ? "Pending" : "Install model first",
+  };
+}
+
+function updateCompareTile(index: number, patch: Partial<CompareTile>): void {
+  const current = compareTiles[index];
+  if (!current) {
+    return;
+  }
+  compareTiles[index] = { ...current, ...patch };
+  const completed = compareTiles.filter((tile) => tile.state === "ready" || tile.state === "error").length;
+  const renderable = compareTiles.filter((tile) => tile.state !== "skipped").length;
+  compareProgress.textContent = `Rendering ${completed}/${renderable}`;
+  setStatus(`Comparing ${completed}/${renderable}`);
+  renderCompareGrid();
+}
+
+function applyCompareTile(tile: CompareTile): void {
+  applySelection(tile.selection);
+  if (sourceImage && tile.result) {
+    showResult(sourceImage, tile.result);
+  }
+  setPreviewTab("result");
+  setStatus(`${tile.label} applied`);
+}
+
+function applySelection(selection: CompareSelection): void {
+  selectedPreset = selection.preset;
+  selectedLineExtractor = selection.lineExtractor;
+  selectedInputMode = selection.inputMode;
+  selectedCleanupPreset = selection.cleanupPreset;
+  applySliderValues(selection.sliderValues);
+  syncControls();
+}
+
+function currentSliderValues(): Record<string, string> {
+  return Object.fromEntries(
+    sliderSpecs.map((spec) => [spec.input, element<HTMLInputElement>(spec.input).value]),
+  );
+}
+
+function aiSliderDefaults(cleanup: CleanupPreset): Record<string, string> {
+  const cleanupValues = cleanupDefaults[cleanup];
+  return {
+    ...presetDefaults.ai,
+    edge: cleanupValues.edge,
+    binary: cleanupValues.binary,
+  };
+}
+
+function applySliderValues(values: Record<string, string>): void {
+  for (const [id, value] of Object.entries(values)) {
     element<HTMLInputElement>(id).value = value;
   }
   syncSliderOutputs();
 }
 
-function readOptions(): ConvertOptions {
-  const characters = charactersInput.value.trim();
-  return {
-    max_width: readNumber("max-width"),
-    font_px: readNumber("font-px"),
-    stripe_px: readNumber("stripe-px"),
-    blur: readNumber("blur"),
-    edge: readNumber("edge"),
-    binary: readNumber("binary"),
-    match: readNumber("match"),
-    mismatch: readNumber("mismatch"),
-    cutoff: readNumber("cutoff"),
-    glyph_ink: readNumber("glyph-ink"),
-    ...(characters ? { character_set: charactersInput.value } : {}),
+function syncControls(): void {
+  for (const button of document.querySelectorAll<HTMLButtonElement>("[data-preset]")) {
+    button.classList.toggle("selected", button.dataset.preset === selectedPreset);
+  }
+  lineExtractorSelect.value = selectedLineExtractor;
+  inputModeSelect.value = selectedInputMode;
+  cleanupPresetSelect.value = selectedCleanupPreset;
+
+  const isAi = selectedLineExtractor !== "builtin";
+  inputModeRow.hidden = isAi;
+  cleanupRow.hidden = !isAi;
+  modelManager.hidden = !isAi;
+  renderModelStatus();
+  updateButtons();
+}
+
+function renderModelStatus(): void {
+  if (selectedLineExtractor === "builtin" || !modelCatalog) {
+    return;
+  }
+
+  const entry = modelEntry(modelCatalog, selectedLineExtractor);
+  const status = modelStatuses.get(selectedLineExtractor) ?? {
+    kind: "missing",
+    label: "Not installed",
+    detail: "Install model first",
   };
+
+  modelStatusLabel.textContent = status.label;
+  modelStatusDetail.textContent =
+    installingModel === selectedLineExtractor && installProgress
+      ? `${formatBytes(installProgress.downloaded)}/${formatBytes(installProgress.total)}`
+      : `${entry.name} · ${status.detail}`;
+
+  installModelButton.disabled = installingModel !== null || busy || status.kind === "installed";
+  installModelButton.textContent =
+    installingModel === selectedLineExtractor
+      ? `Installing ${installProgress ? installProgress.percent.toFixed(0) : 0}%`
+      : status.kind === "corrupt"
+        ? "Repair model"
+        : status.kind === "installed"
+          ? "Installed"
+          : "Install model";
+  installModelButton.title =
+    "Downloads from the verified AA Converter third-party model mirror. See THIRD_PARTY_NOTICES.md.";
+}
+
+function canUseCurrentSettings(): boolean {
+  if (selectedLineExtractor === "builtin") {
+    return true;
+  }
+  return modelStatuses.get(selectedLineExtractor)?.kind === "installed";
+}
+
+function isBusy(): boolean {
+  return busy || installingModel !== null;
 }
 
 function syncSliderOutputs(): void {
@@ -528,15 +1061,11 @@ function previewBatchItem(item: BatchItem): void {
     setStatus(`${item.name} ready`);
   } else {
     lastResult = null;
-    setCanvasEmpty(asciiCanvas);
-    setCanvasEmpty(lineCanvas);
-    setCanvasEmpty(orientationCanvas);
-    asciiSize.textContent = "-";
-    timingTotal.textContent = "-";
-    renderStats(null);
+    clearResultPreview();
     setStatus(`${item.name} queued`);
   }
-  updateButtons();
+  setPreviewTab("result");
+  syncControls();
 }
 
 function showResult(source: SourceImage, result: ConvertResult): void {
@@ -555,6 +1084,7 @@ function showResult(source: SourceImage, result: ConvertResult): void {
   asciiSize.textContent = `${result.width} x ${result.height}`;
   timingTotal.textContent = `${result.timings.total_ms.toFixed(0)} ms`;
   renderStats(result);
+  syncControls();
 }
 
 async function copyText(): Promise<void> {
@@ -573,7 +1103,9 @@ function downloadPng(): void {
   if (!lastResult) {
     return;
   }
-  void resultPngBlob(lastResult).then((blob) => downloadBlob(blob, `${outputBaseName()}-ascii.png`));
+  void rgbaPngBlob(lastResult.ascii_rgba, lastResult.width, lastResult.height).then((blob) =>
+    downloadBlob(blob, `${outputBaseName()}-ascii.png`),
+  );
 }
 
 function downloadTxt(): void {
@@ -588,13 +1120,13 @@ function downloadTxt(): void {
 
 async function downloadBatchZip(): Promise<void> {
   const done = batchItems.filter((item) => item.result);
-  if (done.length === 0 || busy) {
+  if (done.length === 0 || isBusy()) {
     return;
   }
 
   busy = true;
   setStatus("Building ZIP");
-  updateButtons();
+  syncControls();
 
   try {
     const { default: JSZip } = await import("jszip");
@@ -606,7 +1138,13 @@ async function downloadBatchZip(): Promise<void> {
       }
       const prefix = `${String(index + 1).padStart(3, "0")}-${safeBaseName(item.name)}`;
       zip.file(`${prefix}-ascii.txt`, result.text);
-      zip.file(`${prefix}-ascii.png`, await resultPngBlob(result));
+      zip.file(`${prefix}-ascii.png`, await rgbaPngBlob(result.ascii_rgba, result.width, result.height));
+      if (result.ai_line_rgba && result.ai_line_width && result.ai_line_height) {
+        zip.file(
+          `${prefix}-ai-lineart.png`,
+          await rgbaPngBlob(result.ai_line_rgba, result.ai_line_width, result.ai_line_height),
+        );
+      }
     }
     const blob = await zip.generateAsync({ type: "blob" });
     downloadBlob(blob, "aa-converter-batch.zip");
@@ -615,19 +1153,19 @@ async function downloadBatchZip(): Promise<void> {
     setStatus(error instanceof Error ? error.message : String(error), true);
   } finally {
     busy = false;
-    updateButtons();
+    syncControls();
   }
 }
 
-function resultPngBlob(result: ConvertResult): Promise<Blob> {
+function rgbaPngBlob(
+  bytes: Uint8Array | Uint8ClampedArray | number[],
+  width: number,
+  height: number,
+): Promise<Blob> {
   const canvas = document.createElement("canvas");
-  canvas.width = result.width;
-  canvas.height = result.height;
-  requireContext(canvas).putImageData(
-    new ImageData(toClamped(result.ascii_rgba), result.width, result.height),
-    0,
-    0,
-  );
+  canvas.width = width;
+  canvas.height = height;
+  requireContext(canvas).putImageData(new ImageData(toClamped(bytes), width, height), 0, 0);
 
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
@@ -679,14 +1217,76 @@ function renderBatchList(): void {
   );
 }
 
+function renderCompareGrid(): void {
+  if (compareTiles.length === 0) {
+    compareGrid.replaceChildren(emptyComparePlaceholder());
+    return;
+  }
+
+  compareGrid.replaceChildren(
+    ...compareTiles.map((tile) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `compare-tile ${tile.state}`;
+      button.dataset.compareIndex = String(tile.index);
+      button.disabled = tile.state !== "ready";
+
+      const head = document.createElement("div");
+      head.className = "compare-tile-head";
+      const title = document.createElement("strong");
+      title.textContent = tile.label;
+      const detail = document.createElement("span");
+      detail.textContent = tile.detail;
+      head.append(title, detail);
+
+      if (tile.result) {
+        const canvas = document.createElement("canvas");
+        renderRgba(canvas, tile.result.ascii_rgba, tile.result.width, tile.result.height);
+        button.append(head, canvas, compareFoot(tile));
+      } else {
+        const placeholder = document.createElement("div");
+        placeholder.className = "compare-placeholder";
+        placeholder.textContent = tile.statusText;
+        button.append(head, placeholder, compareFoot(tile));
+      }
+
+      return button;
+    }),
+  );
+}
+
+function compareFoot(tile: CompareTile): HTMLElement {
+  const foot = document.createElement("div");
+  foot.className = "compare-tile-foot";
+  foot.textContent = tile.statusText;
+  foot.title = tile.statusText;
+  return foot;
+}
+
+function emptyComparePlaceholder(): HTMLElement {
+  const placeholder = document.createElement("div");
+  placeholder.className = "compare-placeholder";
+  placeholder.textContent = "Run Compare to render candidates.";
+  return placeholder;
+}
+
 function clearBatch(): void {
-  if (busy) {
+  if (isBusy()) {
     return;
   }
   batchItems = [];
   renderBatchList();
   setStatus("Batch cleared");
-  updateButtons();
+  syncControls();
+}
+
+function clearResultPreview(): void {
+  setCanvasEmpty(asciiCanvas);
+  setCanvasEmpty(lineCanvas);
+  setCanvasEmpty(orientationCanvas);
+  asciiSize.textContent = "-";
+  timingTotal.textContent = "-";
+  renderStats(null);
 }
 
 function renderRgba(
@@ -730,18 +1330,21 @@ function setCanvasEmpty(canvas: HTMLCanvasElement): void {
 function updateButtons(): void {
   const hasBatchInput = batchItems.some((item) => item.source);
   const hasBatchResults = batchItems.some((item) => item.result);
+  const busyNow = isBusy();
+  const canConvert = canUseCurrentSettings();
 
-  convertButton.disabled = !sourceImage || busy;
+  convertButton.disabled = !sourceImage || busyNow || !canConvert;
   convertButton.textContent = busy && appMode === "single" ? "Converting..." : "Convert";
-  copyTextButton.disabled = !lastResult || busy;
-  downloadPngButton.disabled = !lastResult || busy;
-  downloadTxtButton.disabled = !lastResult || busy;
+  compareButton.disabled = !sourceImage || busyNow || appMode !== "single";
+  copyTextButton.disabled = !lastResult || busyNow;
+  downloadPngButton.disabled = !lastResult || busyNow;
+  downloadTxtButton.disabled = !lastResult || busyNow;
 
-  convertBatchButton.disabled = !hasBatchInput || busy;
+  convertBatchButton.disabled = !hasBatchInput || busyNow || !canConvert;
   convertBatchButton.textContent = busy && appMode === "batch" ? "Converting..." : "Convert All";
-  downloadBatchButton.disabled = !hasBatchResults || busy;
-  addBatchButton.disabled = busy;
-  clearBatchButton.disabled = busy || batchItems.length === 0;
+  downloadBatchButton.disabled = !hasBatchResults || busyNow;
+  addBatchButton.disabled = busyNow;
+  clearBatchButton.disabled = busyNow || batchItems.length === 0;
 }
 
 function setStatus(message: string, error = false): void {
@@ -760,13 +1363,20 @@ function setConvertingStage(message: string): void {
 }
 
 function setHidden(selector: string, hidden: boolean): void {
-  for (const element of document.querySelectorAll<HTMLElement>(selector)) {
-    element.hidden = hidden;
+  for (const target of document.querySelectorAll<HTMLElement>(selector)) {
+    target.hidden = hidden;
   }
 }
 
-function readNumber(id: string): number {
-  return Number(element<HTMLInputElement>(id).value);
+function cleanupLabel(cleanup: CleanupPreset): string {
+  switch (cleanup) {
+    case "balanced":
+      return "Balanced";
+    case "delicate":
+      return "Delicate";
+    case "clean":
+      return "Clean";
+  }
 }
 
 function outputBaseName(): string {
@@ -774,10 +1384,12 @@ function outputBaseName(): string {
 }
 
 function safeBaseName(name: string): string {
-  return name
-    .replace(/\.[^.]+$/, "")
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g, "_")
-    .trim() || "image";
+  return (
+    name
+      .replace(/\.[^.]+$/, "")
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, "_")
+      .trim() || "image"
+  );
 }
 
 function toClamped(bytes: Uint8Array | Uint8ClampedArray | number[]): Uint8ClampedArray<ArrayBuffer> {

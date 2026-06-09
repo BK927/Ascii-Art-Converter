@@ -1,6 +1,14 @@
 import initWasm, { convert_rgba } from "../pkg/aa_wasm.js";
 
-type Preset = "clean" | "sensitive" | "color" | "soft" | "ai-sketch";
+import { extractAiLineart } from "./lineartInference";
+import type { AiLineart, RgbaSource } from "./lineartInference";
+import { loadModelCatalog } from "./modelStore";
+import type { ModelCatalog, ModelId } from "./modelStore";
+
+type Preset = "clean" | "sensitive" | "color" | "soft" | "ai";
+type LineExtractorId = "builtin" | ModelId;
+type BuiltInInputMode = "structure" | "binary" | "soft";
+type CleanupPreset = "balanced" | "delicate" | "clean";
 
 interface ConvertOptions {
   max_width: number;
@@ -13,7 +21,22 @@ interface ConvertOptions {
   match: number;
   cutoff: number;
   glyph_ink: number;
+  input_mode: "structure" | "binary" | "soft" | "ai";
+  structure_line_mode: "flowdog";
+  thinning_mode: "kmm" | "guo-hall";
+  placement_mode: "paper-greedy" | "soft-grid";
+  stroke_tolerance: boolean;
+  min_component_pixels: number;
+  short_branch_prune_px: number;
   character_set?: string;
+}
+
+interface ConversionSettings {
+  preset: Preset;
+  lineExtractor: LineExtractorId;
+  inputMode: BuiltInInputMode;
+  cleanupPreset: CleanupPreset;
+  options: ConvertOptions;
 }
 
 interface ConvertRequest {
@@ -23,8 +46,22 @@ interface ConvertRequest {
   imageRgba: Uint8Array;
   imageWidth: number;
   imageHeight: number;
-  preset: Preset;
-  options: ConvertOptions;
+  settings: ConversionSettings;
+}
+
+interface CompareJob {
+  index: number;
+  settings: ConversionSettings;
+}
+
+interface CompareRequest {
+  type: "compare";
+  id: number;
+  baseUrl: string;
+  imageRgba: Uint8Array;
+  imageWidth: number;
+  imageHeight: number;
+  jobs: CompareJob[];
 }
 
 interface ConvertResult {
@@ -34,6 +71,9 @@ interface ConvertResult {
   ascii_rgba: Uint8Array | number[];
   line_rgba: Uint8Array | number[];
   orientation_rgba: Uint8Array | number[];
+  ai_line_rgba?: Uint8Array | number[];
+  ai_line_width?: number;
+  ai_line_height?: number;
   stats: {
     input_width: number;
     input_height: number;
@@ -55,60 +95,143 @@ interface ConvertResult {
   };
 }
 
+type WorkerRequest = ConvertRequest | CompareRequest;
+
 let wasmReady: Promise<void> | null = null;
 let fontBytes: Uint8Array | null = null;
 
-self.addEventListener("message", (event: MessageEvent<ConvertRequest>) => {
-  if (event.data.type !== "convert") {
-    return;
+self.addEventListener("message", (event: MessageEvent<WorkerRequest>) => {
+  if (event.data.type === "convert") {
+    void convert(event.data);
+  } else {
+    void compare(event.data);
   }
-  void convert(event.data);
 });
 
 async function convert(message: ConvertRequest): Promise<void> {
   try {
     postStatus(message.id, "Loading engine");
     await ensureEngine(message.baseUrl);
-    if (!fontBytes) {
-      throw new Error("font did not load");
-    }
+    const catalog = await loadModelCatalog(message.baseUrl);
 
     postStatus(message.id, "Converting");
-    const rawResult = convert_rgba(
-      message.imageRgba,
-      message.imageWidth,
-      message.imageHeight,
-      fontBytes,
-      message.preset,
-      message.options,
-    ) as ConvertResult;
+    const result = await convertSource(
+      message.baseUrl,
+      catalog,
+      {
+        width: message.imageWidth,
+        height: message.imageHeight,
+        rgba: message.imageRgba,
+      },
+      message.settings,
+      undefined,
+      (status) => postStatus(message.id, status),
+    );
 
-    const result = {
-      ...rawResult,
-      ascii_rgba: asUint8Array(rawResult.ascii_rgba),
-      line_rgba: asUint8Array(rawResult.line_rgba),
-      orientation_rgba: asUint8Array(rawResult.orientation_rgba),
+    postResult(message.id, "result", result);
+  } catch (error) {
+    postError(message.id, error);
+  }
+}
+
+async function compare(message: CompareRequest): Promise<void> {
+  const lineartCache = new Map<ModelId, AiLineart>();
+  try {
+    postStatus(message.id, "Loading engine");
+    await ensureEngine(message.baseUrl);
+    const catalog = await loadModelCatalog(message.baseUrl);
+    const source = {
+      width: message.imageWidth,
+      height: message.imageHeight,
+      rgba: message.imageRgba,
     };
 
-    self.postMessage(
-      {
-        type: "result",
-        id: message.id,
-        result,
-      },
-      [
-        result.ascii_rgba.buffer,
-        result.line_rgba.buffer,
-        result.orientation_rgba.buffer,
-      ],
-    );
+    for (const job of message.jobs) {
+      self.postMessage({ type: "compare-started", id: message.id, index: job.index });
+      try {
+        const result = await convertSource(
+          message.baseUrl,
+          catalog,
+          source,
+          job.settings,
+          lineartCache,
+          (status) =>
+            self.postMessage({
+              type: "compare-status",
+              id: message.id,
+              index: job.index,
+              message: status,
+            }),
+        );
+        postResult(message.id, "compare-result", result, job.index);
+      } catch (error) {
+        self.postMessage({
+          type: "compare-error",
+          id: message.id,
+          index: job.index,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    self.postMessage({ type: "compare-done", id: message.id });
   } catch (error) {
-    self.postMessage({
-      type: "error",
-      id: message.id,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    postError(message.id, error);
+    self.postMessage({ type: "compare-done", id: message.id });
   }
+}
+
+async function convertSource(
+  baseUrl: string,
+  catalog: ModelCatalog,
+  source: RgbaSource,
+  settings: ConversionSettings,
+  lineartCache: Map<ModelId, AiLineart> | undefined,
+  onStatus: (message: string) => void,
+): Promise<ConvertResult> {
+  if (!fontBytes) {
+    throw new Error("font did not load");
+  }
+
+  let input = source;
+  let aiLineart: AiLineart | undefined;
+  if (settings.lineExtractor !== "builtin") {
+    onStatus(`Running ${settings.lineExtractor}`);
+    aiLineart = await cachedAiLineart(baseUrl, catalog, settings.lineExtractor, source, lineartCache);
+    input = aiLineart;
+  }
+
+  const rawResult = convert_rgba(
+    input.rgba,
+    input.width,
+    input.height,
+    fontBytes,
+    settings.preset,
+    settings.options,
+  ) as ConvertResult;
+
+  const result = normalizeResult(rawResult);
+  if (aiLineart) {
+    result.ai_line_rgba = aiLineart.rgba.slice();
+    result.ai_line_width = aiLineart.width;
+    result.ai_line_height = aiLineart.height;
+  }
+  return result;
+}
+
+async function cachedAiLineart(
+  baseUrl: string,
+  catalog: ModelCatalog,
+  model: ModelId,
+  source: RgbaSource,
+  cache: Map<ModelId, AiLineart> | undefined,
+): Promise<AiLineart> {
+  const cached = cache?.get(model);
+  if (cached) {
+    return cached;
+  }
+  const lineart = await extractAiLineart(baseUrl, catalog, model, source);
+  cache?.set(model, lineart);
+  return lineart;
 }
 
 async function ensureEngine(baseUrl: string): Promise<void> {
@@ -126,8 +249,39 @@ async function ensureEngine(baseUrl: string): Promise<void> {
   }
 }
 
-function asUint8Array(value: Uint8Array | number[]): Uint8Array {
-  return value instanceof Uint8Array ? value : new Uint8Array(value);
+function normalizeResult(result: ConvertResult): ConvertResult {
+  return {
+    ...result,
+    ascii_rgba: asUint8Array(result.ascii_rgba),
+    line_rgba: asUint8Array(result.line_rgba),
+    orientation_rgba: asUint8Array(result.orientation_rgba),
+    ...(result.ai_line_rgba ? { ai_line_rgba: asUint8Array(result.ai_line_rgba) } : {}),
+  };
+}
+
+function postResult(
+  id: number,
+  type: "result" | "compare-result",
+  result: ConvertResult,
+  index?: number,
+): void {
+  const transfer = [
+    asUint8Array(result.ascii_rgba).buffer,
+    asUint8Array(result.line_rgba).buffer,
+    asUint8Array(result.orientation_rgba).buffer,
+  ];
+  if (result.ai_line_rgba) {
+    transfer.push(asUint8Array(result.ai_line_rgba).buffer);
+  }
+  self.postMessage(
+    {
+      type,
+      id,
+      ...(index === undefined ? {} : { index }),
+      result,
+    },
+    transfer,
+  );
 }
 
 function postStatus(id: number, message: string): void {
@@ -136,4 +290,16 @@ function postStatus(id: number, message: string): void {
     id,
     message,
   });
+}
+
+function postError(id: number, error: unknown): void {
+  self.postMessage({
+    type: "error",
+    id,
+    error: error instanceof Error ? error.message : String(error),
+  });
+}
+
+function asUint8Array(value: Uint8Array | number[]): Uint8Array {
+  return value instanceof Uint8Array ? value : new Uint8Array(value);
 }

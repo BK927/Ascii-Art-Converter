@@ -56,9 +56,42 @@
               <button class="selected" type="button" data-preset="color">Illustration</button>
               <button type="button" data-preset="clean">Line Art</button>
               <button type="button" data-preset="sensitive">Fine Lines</button>
-              <button type="button" data-preset="soft">B2 Soft Grid</button>
-              <button type="button" data-preset="ai-sketch">AI 1px Lines</button>
+              <button type="button" data-preset="soft">Soft Sketch</button>
+              <button type="button" data-preset="ai">AI</button>
             </div>
+          </section>
+
+          <section class="control-section" aria-label="Line extraction">
+            <h2>Line Extraction</h2>
+            <label class="select-row">
+              <span>Extractor</span>
+              <select id="line-extractor">
+                <option value="builtin">Built-in extractor</option>
+              </select>
+            </label>
+            <div class="model-manager" id="model-manager" hidden>
+              <div>
+                <strong id="model-status-label">Not installed</strong>
+                <span id="model-status-detail">Install model first</span>
+              </div>
+              <button id="install-model" type="button">Install model</button>
+            </div>
+            <label class="select-row" id="input-mode-row">
+              <span>Input mode</span>
+              <select id="input-mode">
+                <option value="structure">structure lines</option>
+                <option value="binary">binary lines</option>
+                <option value="soft">soft lines</option>
+              </select>
+            </label>
+            <label class="select-row" id="cleanup-row" hidden>
+              <span>1px cleanup</span>
+              <select id="cleanup-preset">
+                <option value="balanced">Balanced</option>
+                <option value="delicate">Delicate</option>
+                <option value="clean">Clean</option>
+              </select>
+            </label>
           </section>
 
           <section class="control-section" aria-label="Geometry">
@@ -120,6 +153,7 @@
 
           <div class="actions">
             <button class="primary single-action" id="convert" type="button" disabled>Convert</button>
+            <button class="single-action" id="compare" type="button" disabled>Compare</button>
             <button class="single-action" id="copy-text" type="button" disabled>Copy TXT</button>
             <button class="single-action" id="download-png" type="button" disabled>Download PNG</button>
             <button class="single-action" id="download-txt" type="button" disabled>Download TXT</button>
@@ -134,63 +168,78 @@
           <p class="privacy">Images stay in this browser session.</p>
         </aside>
 
-        <section class="preview-grid" aria-label="Preview">
-          <article class="preview-panel large">
-            <div class="panel-title">
-              <h2>Original</h2>
-              <span id="original-size">-</span>
-            </div>
-            <canvas id="original-canvas"></canvas>
-          </article>
+        <section class="preview-area" aria-label="Preview">
+          <div class="preview-tabs single-only" id="preview-tabs">
+            <button class="selected" type="button" data-preview-tab="result">Result</button>
+            <button type="button" data-preview-tab="compare">Compare</button>
+          </div>
 
-          <article class="preview-panel large output-panel">
-            <div class="panel-title">
-              <h2>ASCII</h2>
-              <span id="ascii-size">-</span>
-            </div>
-            <canvas id="ascii-canvas"></canvas>
-            <div class="conversion-overlay" id="converting-overlay" hidden aria-live="polite">
-              <div class="conversion-card">
-                <div class="scanbox" aria-hidden="true">
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                </div>
-                <div class="conversion-copy">
-                  <strong>Rendering ASCII</strong>
-                  <span id="converting-stage">Preparing image</span>
+          <section class="preview-grid" id="result-view" aria-label="Result preview">
+            <article class="preview-panel large">
+              <div class="panel-title">
+                <h2>Original</h2>
+                <span id="original-size">-</span>
+              </div>
+              <canvas id="original-canvas"></canvas>
+            </article>
+
+            <article class="preview-panel large output-panel">
+              <div class="panel-title">
+                <h2>ASCII</h2>
+                <span id="ascii-size">-</span>
+              </div>
+              <canvas id="ascii-canvas"></canvas>
+              <div class="conversion-overlay" id="converting-overlay" hidden aria-live="polite">
+                <div class="conversion-card">
+                  <div class="scanbox" aria-hidden="true">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                  </div>
+                  <div class="conversion-copy">
+                    <strong>Rendering ASCII</strong>
+                    <span id="converting-stage">Preparing image</span>
+                  </div>
                 </div>
               </div>
-            </div>
-          </article>
+            </article>
 
-          <article class="preview-panel small">
-            <div class="panel-title">
-              <h2>Lines</h2>
-            </div>
-            <canvas id="line-canvas"></canvas>
-          </article>
+            <article class="preview-panel small">
+              <div class="panel-title">
+                <h2>Lines</h2>
+              </div>
+              <canvas id="line-canvas"></canvas>
+            </article>
 
-          <article class="preview-panel small">
-            <div class="panel-title">
-              <h2>Direction</h2>
-            </div>
-            <canvas id="orientation-canvas"></canvas>
-          </article>
+            <article class="preview-panel small">
+              <div class="panel-title">
+                <h2>Direction</h2>
+              </div>
+              <canvas id="orientation-canvas"></canvas>
+            </article>
 
-          <article class="preview-panel stats-panel">
-            <div class="panel-title">
-              <h2>Run</h2>
-              <span id="timing-total">-</span>
+            <article class="preview-panel stats-panel">
+              <div class="panel-title">
+                <h2>Run</h2>
+                <span id="timing-total">-</span>
+              </div>
+              <dl id="stats-list">
+                <div><dt>Glyphs</dt><dd>-</dd></div>
+                <div><dt>Placed</dt><dd>-</dd></div>
+                <div><dt>Strokes</dt><dd>-</dd></div>
+                <div><dt>Working</dt><dd>-</dd></div>
+              </dl>
+            </article>
+          </section>
+
+          <section class="compare-view" id="compare-view" aria-label="Compare grid" hidden>
+            <div class="compare-head">
+              <h2>Compare</h2>
+              <span id="compare-progress">Run Compare to render candidates.</span>
             </div>
-            <dl id="stats-list">
-              <div><dt>Glyphs</dt><dd>-</dd></div>
-              <div><dt>Placed</dt><dd>-</dd></div>
-              <div><dt>Strokes</dt><dd>-</dd></div>
-              <div><dt>Working</dt><dd>-</dd></div>
-            </dl>
-          </article>
+            <div class="compare-grid" id="compare-grid"></div>
+          </section>
         </section>
       </main>
     </div>

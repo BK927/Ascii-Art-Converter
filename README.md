@@ -23,7 +23,8 @@ Download the desktop app: [GitHub Releases](https://github.com/BK927/Ascii-Art-C
 - Rendered PNG output and approximate `.txt` output.
 - Single-image tuning and batch conversion.
 - Presets for color illustrations, clean line art, and fine-line input.
-- Desktop AI line-art extraction with in-app optional model install and selectable cleanup styles.
+- AI line-art extraction with optional model install and selectable cleanup styles
+  in the desktop app and browser runner.
 - Bundled font profile intended for commercial-safe use.
 
 ## Recommended Inputs
@@ -42,10 +43,11 @@ The app presets are:
   still renders monochrome ASCII art.
 - `AI`: uses a selected AI line extractor, normalizes the result into
   thin binary strokes, then renders ASCII art. Optional third-party AI models
-  are installed from the verified AA Converter model mirror when first used.
+  are installed from the verified AA Converter model mirror when requested.
   The desktop app stores installed models next to the executable under
-  `models/`. If that folder is not writable, the app shows an error instead of
-  writing to another location.
+  `models/`. The browser runner stores installed models in browser storage for
+  the current origin. If the selected storage location is not writable, the app
+  shows an error instead of writing to another location.
 - `Line Art`: clean black-and-white character line art.
 - `Fine Lines`: more aggressive line pickup for faint, thin, or detail-heavy
   line art.

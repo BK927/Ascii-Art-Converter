@@ -5,5 +5,8 @@
 /web/node_modules/
 /web/dist/
 /web/pkg/
+/web/public/THIRD_PARTY_NOTICES.md
+/web/public/model_catalog.json
+/web/public/ort/
 /assets/models/*.onnx
 /assets/models/*.part

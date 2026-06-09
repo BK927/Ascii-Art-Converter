@@ -22,6 +22,13 @@ struct ConvertOptions {
     cutoff: Option<f32>,
     glyph_ink: Option<f32>,
     character_set: Option<String>,
+    input_mode: Option<String>,
+    structure_line_mode: Option<String>,
+    thinning_mode: Option<String>,
+    placement_mode: Option<String>,
+    stroke_tolerance: Option<bool>,
+    min_component_pixels: Option<u32>,
+    short_branch_prune_px: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -127,7 +134,7 @@ fn config_for_preset(preset: &str, font_bytes: &[u8]) -> Result<AsciiConfig, aa_
         }
         "color" => color_illustration_preset(font_bytes),
         "soft" | "soft-grid" | "b2" => soft_grid_preset(font_bytes),
-        "ai-sketch" | "anime-sketch" => anime_sketch_paper_preset(font_bytes),
+        "ai" | "ai-sketch" | "anime-sketch" => anime_sketch_paper_preset(font_bytes),
         _ => paper_preset(font_bytes),
     }
 }
@@ -169,10 +176,75 @@ fn apply_options(config: &mut AsciiConfig, options: ConvertOptions) {
     if let Some(value) = options.glyph_ink {
         config.glyph_alpha_threshold = value.clamp(0.02, 0.6);
     }
+    if let Some(value) = options.input_mode {
+        if let Some(mode) = parse_input_mode(&value) {
+            config.input_mode = mode;
+        }
+    }
+    if let Some(value) = options.structure_line_mode {
+        if let Some(mode) = parse_structure_line_mode(&value) {
+            config.structure_line_mode = mode;
+        }
+    }
+    if let Some(value) = options.thinning_mode {
+        if let Some(mode) = parse_thinning_mode(&value) {
+            config.thinning_mode = mode;
+        }
+    }
+    if let Some(value) = options.placement_mode {
+        if let Some(mode) = parse_placement_mode(&value) {
+            config.placement_mode = mode;
+        }
+    }
+    if let Some(value) = options.stroke_tolerance {
+        config.stroke_tolerance = value;
+    }
+    if let Some(value) = options.min_component_pixels {
+        config.min_component_pixels = value.min(512);
+    }
+    if let Some(value) = options.short_branch_prune_px {
+        config.short_branch_prune_px = value.min(512);
+    }
     if let Some(value) = options.character_set {
         if !value.trim().is_empty() {
             config.character_set = value;
         }
+    }
+}
+
+fn parse_input_mode(value: &str) -> Option<InputMode> {
+    match value {
+        "structure" | "ExtractStructureLines" => Some(InputMode::ExtractStructureLines),
+        "binary" | "TreatAsBinaryLines" => Some(InputMode::TreatAsBinaryLines),
+        "soft" | "TreatAsSoftLines" => Some(InputMode::TreatAsSoftLines),
+        "ai" | "NormalizeAiLineart" => Some(InputMode::NormalizeAiLineart),
+        _ => None,
+    }
+}
+
+fn parse_structure_line_mode(value: &str) -> Option<StructureLineMode> {
+    match value {
+        "flowdog" | "FlowDog" => Some(StructureLineMode::FlowDog),
+        "scharr" | "ScharrMagnitude" => Some(StructureLineMode::ScharrMagnitude),
+        _ => None,
+    }
+}
+
+fn parse_thinning_mode(value: &str) -> Option<ThinningMode> {
+    match value {
+        "kmm" | "KmmK3mLookup" => Some(ThinningMode::KmmK3mLookup),
+        "zhang-suen" | "ZhangSuen" => Some(ThinningMode::ZhangSuen),
+        "guo-hall" | "GuoHall" => Some(ThinningMode::GuoHall),
+        _ => None,
+    }
+}
+
+fn parse_placement_mode(value: &str) -> Option<PlacementMode> {
+    match value {
+        "paper-greedy" | "PaperGreedy" => Some(PlacementMode::PaperGreedy),
+        "left-to-right" | "LeftToRight" => Some(PlacementMode::LeftToRight),
+        "soft-grid" | "SoftGrid" => Some(PlacementMode::SoftGrid),
+        _ => None,
     }
 }
 
