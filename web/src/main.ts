@@ -266,6 +266,7 @@ const allModelsStatusDetail = element<HTMLElement>("all-models-status-detail");
 const installAllModelsButton = element<HTMLButtonElement>("install-all-models");
 const resultView = element<HTMLElement>("result-view");
 const compareView = element<HTMLElement>("compare-view");
+const compareDetail = element<HTMLElement>("compare-detail");
 const compareGrid = element<HTMLElement>("compare-grid");
 const compareProgress = element<HTMLElement>("compare-progress");
 const originalCanvas = element<HTMLCanvasElement>("original-canvas");
@@ -298,6 +299,7 @@ let lastResult: ConvertResult | null = null;
 let batchItems: BatchItem[] = [];
 let nextBatchId = 1;
 let compareTiles: CompareTile[] = [];
+let selectedCompareIndex: number | null = null;
 let pendingCompare: PendingCompare | null = null;
 
 const pendingJobs = new Map<number, PendingJob>();
@@ -309,6 +311,8 @@ setCanvasEmpty(asciiCanvas);
 setCanvasEmpty(lineCanvas);
 setCanvasEmpty(orientationCanvas);
 renderBatchList();
+renderCompareGrid();
+renderCompareDetail();
 setMode("single");
 void initializeModels();
 
@@ -398,6 +402,18 @@ function wireControls(): void {
     }
     const tile = compareTiles[Number(button.dataset.compareIndex)];
     if (tile?.state === "ready" && tile.result) {
+      selectCompareTile(tile.index);
+    }
+  });
+
+  compareDetail.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    const button = target.closest<HTMLButtonElement>("[data-compare-apply]");
+    if (!button) {
+      return;
+    }
+    const tile = selectedCompareTile();
+    if (tile?.state === "ready" && tile.result) {
       applyCompareTile(tile);
     }
   });
@@ -470,6 +486,7 @@ async function loadSingleFile(file: File): Promise<void> {
     sourceImage = await sourceFromFile(file);
     lastResult = null;
     compareTiles = [];
+    selectedCompareIndex = null;
 
     renderRgba(originalCanvas, sourceImage.rgba, sourceImage.width, sourceImage.height);
     originalSize.textContent = `${sourceImage.width} x ${sourceImage.height}`;
@@ -477,6 +494,7 @@ async function loadSingleFile(file: File): Promise<void> {
     clearResultPreview();
     compareProgress.textContent = "Run Compare to render candidates.";
     renderCompareGrid();
+    renderCompareDetail();
     setPreviewTab("result");
     setStatus("Ready");
     syncControls();
@@ -673,7 +691,9 @@ async function runCompare(): Promise<void> {
   }
 
   compareTiles = buildCompareTiles();
+  selectedCompareIndex = null;
   renderCompareGrid();
+  renderCompareDetail();
   setPreviewTab("compare");
 
   const jobs: CompareJob[] = compareTiles
@@ -1013,11 +1033,15 @@ function updateCompareTile(index: number, patch: Partial<CompareTile>): void {
     return;
   }
   compareTiles[index] = { ...current, ...patch };
+  if (selectedCompareIndex === null && compareTiles[index].state === "ready") {
+    selectedCompareIndex = index;
+  }
   const completed = compareTiles.filter((tile) => tile.state === "ready" || tile.state === "error").length;
   const renderable = compareTiles.filter((tile) => tile.state !== "skipped").length;
   compareProgress.textContent = `Rendering ${completed}/${renderable}`;
   setStatus(`Comparing ${completed}/${renderable}`);
   renderCompareGrid();
+  renderCompareDetail();
 }
 
 function applyCompareTile(tile: CompareTile): void {
@@ -1027,6 +1051,24 @@ function applyCompareTile(tile: CompareTile): void {
   }
   setPreviewTab("result");
   setStatus(`${tile.label} applied`);
+}
+
+function selectCompareTile(index: number): void {
+  const tile = compareTiles[index];
+  if (!tile || tile.state !== "ready" || !tile.result) {
+    return;
+  }
+  selectedCompareIndex = index;
+  renderCompareGrid();
+  renderCompareDetail();
+  setStatus(`${tile.label} selected`);
+}
+
+function selectedCompareTile(): CompareTile | null {
+  if (selectedCompareIndex === null) {
+    return null;
+  }
+  return compareTiles[selectedCompareIndex] ?? null;
 }
 
 function applySelection(selection: CompareSelection): void {
@@ -1155,6 +1197,7 @@ function refreshCompareTilesAfterModelInstall(): void {
   if (changed) {
     compareProgress.textContent = "Newly installed model candidates are ready to compare.";
     renderCompareGrid();
+    renderCompareDetail();
   }
 }
 
@@ -1359,6 +1402,7 @@ function renderCompareGrid(): void {
       const button = document.createElement("button");
       button.type = "button";
       button.className = `compare-tile ${tile.state}`;
+      button.classList.toggle("selected", selectedCompareIndex === tile.index);
       button.dataset.compareIndex = String(tile.index);
       button.disabled = tile.state !== "ready";
 
@@ -1384,6 +1428,144 @@ function renderCompareGrid(): void {
       return button;
     }),
   );
+}
+
+function renderCompareDetail(): void {
+  const tile = selectedCompareTile();
+  if (!tile || !tile.result) {
+    compareDetail.replaceChildren(compareDetailPlaceholder());
+    return;
+  }
+
+  const result = tile.result;
+  const article = document.createElement("article");
+  article.className = "compare-detail-card";
+
+  const header = document.createElement("div");
+  header.className = "compare-detail-head";
+  const titleWrap = document.createElement("div");
+  const title = document.createElement("h3");
+  title.textContent = tile.label;
+  const detail = document.createElement("span");
+  detail.textContent = `${tile.detail} · ${tile.statusText}`;
+  titleWrap.append(title, detail);
+
+  const apply = document.createElement("button");
+  apply.type = "button";
+  apply.className = "compare-apply";
+  apply.dataset.compareApply = "true";
+  apply.textContent = "Use this setting";
+  header.append(titleWrap, apply);
+
+  const stages = document.createElement("div");
+  stages.className = "compare-stage-grid";
+  const isAi = tile.selection.lineExtractor !== "builtin";
+  const stageData = isAi
+    ? [
+        {
+          label: "AI lineart",
+          bytes: result.ai_line_rgba,
+          width: result.ai_line_width,
+          height: result.ai_line_height,
+          placeholder: "AI lineart pending",
+        },
+        {
+          label: "1px lines",
+          bytes: result.line_rgba,
+          width: result.width,
+          height: result.stats.working_height,
+          placeholder: "1px lines pending",
+        },
+        {
+          label: "Direction",
+          bytes: result.orientation_rgba,
+          width: result.width,
+          height: result.stats.working_height,
+          placeholder: "Direction pending",
+        },
+        {
+          label: "ASCII",
+          bytes: result.ascii_rgba,
+          width: result.width,
+          height: result.height,
+          placeholder: "ASCII pending",
+        },
+      ]
+    : [
+        {
+          label: "Input",
+          bytes: sourceImage?.rgba,
+          width: sourceImage?.width,
+          height: sourceImage?.height,
+          placeholder: "Input pending",
+        },
+        {
+          label: "Lines",
+          bytes: result.line_rgba,
+          width: result.width,
+          height: result.stats.working_height,
+          placeholder: "Lines pending",
+        },
+        {
+          label: "Direction",
+          bytes: result.orientation_rgba,
+          width: result.width,
+          height: result.stats.working_height,
+          placeholder: "Direction pending",
+        },
+        {
+          label: "ASCII",
+          bytes: result.ascii_rgba,
+          width: result.width,
+          height: result.height,
+          placeholder: "ASCII pending",
+        },
+      ];
+
+  for (const stage of stageData) {
+    stages.append(compareStage(stage.label, stage.bytes, stage.width, stage.height, stage.placeholder));
+  }
+
+  article.append(header, stages);
+  compareDetail.replaceChildren(article);
+}
+
+function compareStage(
+  labelText: string,
+  bytes: Uint8Array | Uint8ClampedArray | number[] | undefined,
+  width: number | undefined,
+  height: number | undefined,
+  placeholderText: string,
+): HTMLElement {
+  const stage = document.createElement("section");
+  stage.className = "compare-stage";
+  const label = document.createElement("span");
+  label.textContent = labelText;
+  stage.append(label);
+
+  if (bytes && width && height) {
+    const canvas = document.createElement("canvas");
+    renderRgba(canvas, bytes, width, height);
+    stage.append(canvas);
+  } else {
+    const placeholder = document.createElement("div");
+    placeholder.className = "compare-placeholder";
+    placeholder.textContent = placeholderText;
+    stage.append(placeholder);
+  }
+
+  return stage;
+}
+
+function compareDetailPlaceholder(): HTMLElement {
+  const placeholder = document.createElement("article");
+  placeholder.className = "compare-detail-card empty";
+  const title = document.createElement("h3");
+  title.textContent = "Select a rendered option";
+  const body = document.createElement("p");
+  body.textContent = "Run Compare and choose a ready tile to inspect intermediate stages.";
+  placeholder.append(title, body);
+  return placeholder;
 }
 
 function compareFoot(tile: CompareTile): HTMLElement {

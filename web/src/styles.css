@@ -598,17 +598,114 @@ canvas.filled {
   white-space: nowrap;
 }
 
-.compare-grid {
+.compare-layout {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-areas:
+    "detail"
+    "grid";
+  gap: 14px;
+}
+
+.compare-grid {
+  grid-area: grid;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 12px;
+}
+
+.compare-detail {
+  grid-area: detail;
+  min-width: 0;
+}
+
+.compare-detail-card {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--shadow);
+}
+
+.compare-detail-card.empty {
+  min-height: 220px;
+  align-content: center;
+  justify-items: center;
+  color: var(--muted);
+  text-align: center;
+}
+
+.compare-detail-card.empty h3,
+.compare-detail-card.empty p {
+  margin: 0;
+}
+
+.compare-detail-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.compare-detail-head h3 {
+  margin: 0;
+  overflow: hidden;
+  font-size: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compare-detail-head span {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compare-apply {
+  min-width: 132px;
+  color: #ffffff;
+  background: var(--teal);
+  border-color: var(--teal-dark);
+}
+
+.compare-stage-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.compare-stage {
+  display: grid;
+  grid-template-rows: auto minmax(220px, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+.compare-stage > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.compare-stage canvas,
+.compare-stage .compare-placeholder {
+  width: 100%;
+  min-height: 220px;
+  border: 1px solid #d7dde0;
+  border-radius: 6px;
+  background: #f9fbfb;
 }
 
 .compare-tile {
   display: grid;
-  grid-template-rows: auto minmax(160px, 1fr) auto;
+  grid-template-rows: auto minmax(190px, 1fr) auto;
   gap: 8px;
-  min-height: 260px;
+  min-height: 300px;
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -620,6 +717,11 @@ canvas.filled {
 
 .compare-tile.ready:hover {
   border-color: var(--teal);
+}
+
+.compare-tile.selected {
+  border-color: var(--teal);
+  box-shadow: 0 0 0 2px rgba(0, 127, 130, 0.16), var(--shadow);
 }
 
 .compare-tile:disabled {
@@ -655,18 +757,30 @@ canvas.filled {
 }
 
 .compare-tile canvas {
-  min-height: 160px;
+  min-height: 190px;
 }
 
 .compare-placeholder {
   display: grid;
   place-items: center;
-  min-height: 160px;
+  min-height: 190px;
   border: 1px dashed #cbd4d8;
   border-radius: 6px;
   color: var(--muted);
   background: #f9fbfb;
   font-size: 12px;
+}
+
+@media (min-width: 980px) {
+  .compare-layout {
+    grid-template-areas: "grid detail";
+    grid-template-columns: minmax(280px, 0.9fr) minmax(460px, 1.35fr);
+    align-items: start;
+  }
+
+  .compare-stage-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 #stats-list {

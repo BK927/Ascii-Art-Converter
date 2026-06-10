@@ -85,6 +85,7 @@ struct AaApp {
     compare_pending: Option<Receiver<CompareMessage>>,
     compare_tiles: Vec<CompareTile>,
     compare_progress: Option<CompareProgress>,
+    selected_compare_index: Option<usize>,
     original_texture: Option<TextureHandle>,
     ai_lineart_texture: Option<TextureHandle>,
     ai_lineart_preview: Option<RgbaImage>,
@@ -142,6 +143,10 @@ struct CompareTile {
     spec: CompareSpec,
     state: CompareTileState,
     texture: Option<TextureHandle>,
+    ai_lineart_texture: Option<TextureHandle>,
+    line_texture: Option<TextureHandle>,
+    orientation_texture: Option<TextureHandle>,
+    ascii_texture: Option<TextureHandle>,
     selection: Option<CompareSelection>,
 }
 
@@ -292,6 +297,7 @@ impl AaApp {
             compare_pending: None,
             compare_tiles: Vec::new(),
             compare_progress: None,
+            selected_compare_index: None,
             original_texture: None,
             ai_lineart_texture: None,
             ai_lineart_preview: None,
@@ -318,6 +324,7 @@ impl AaApp {
                 self.compare_pending = None;
                 self.compare_tiles.clear();
                 self.compare_progress = None;
+                self.selected_compare_index = None;
                 self.result = None;
                 self.status = format!("Loaded {}", compact_path(&path));
                 self.preview_tab = PreviewTab::Result;
@@ -746,6 +753,7 @@ impl AaApp {
             completed: skipped,
             total,
         });
+        self.selected_compare_index = None;
         self.compare_pending = Some(receiver);
         self.preview_tab = PreviewTab::Compare;
         self.status = format!("Comparing {skipped}/{total} options...");
@@ -944,19 +952,52 @@ impl AaApp {
                     if let Some(progress) = &mut self.compare_progress {
                         progress.completed = progress.completed.saturating_add(1);
                     }
+                    let should_select = self.selected_compare_index.is_none();
                     if let Some(tile) = self.compare_tiles.get_mut(index) {
                         match result {
                             Ok(selection) => {
-                                tile.texture = Some(load_texture_from_rgba(
+                                let thumbnail = load_texture_from_rgba(
                                     ctx,
                                     &selection.result.ascii_preview,
                                     &format!("compare-tile-{index}"),
+                                );
+                                let ascii_texture = load_texture_from_rgba(
+                                    ctx,
+                                    &selection.result.ascii_preview,
+                                    &format!("compare-detail-ascii-{index}"),
+                                );
+                                tile.texture = Some(thumbnail);
+                                tile.ai_lineart_texture =
+                                    selection.ai_lineart.as_ref().map(|ai_lineart| {
+                                        load_texture_from_rgba(
+                                            ctx,
+                                            ai_lineart,
+                                            &format!("compare-detail-ai-lineart-{index}"),
+                                        )
+                                    });
+                                tile.line_texture = Some(load_texture_from_rgba(
+                                    ctx,
+                                    &selection.result.line_preview,
+                                    &format!("compare-detail-lines-{index}"),
                                 ));
+                                tile.orientation_texture = Some(load_texture_from_rgba(
+                                    ctx,
+                                    &selection.result.orientation_preview,
+                                    &format!("compare-detail-orientation-{index}"),
+                                ));
+                                tile.ascii_texture = Some(ascii_texture);
                                 tile.selection = Some(selection);
                                 tile.state = CompareTileState::Ready;
+                                if should_select {
+                                    self.selected_compare_index = Some(index);
+                                }
                             }
                             Err(err) => {
                                 tile.texture = None;
+                                tile.ai_lineart_texture = None;
+                                tile.line_texture = None;
+                                tile.orientation_texture = None;
+                                tile.ascii_texture = None;
                                 tile.selection = None;
                                 tile.state = CompareTileState::Error(err);
                             }
@@ -2227,38 +2268,187 @@ impl AaApp {
             return;
         }
 
-        let available_width = ui.available_width().max(220.0);
-        let gap = 10.0;
-        let columns = ((available_width + gap) / 230.0).floor().max(1.0) as usize;
-        let tile_width = ((available_width - gap * (columns.saturating_sub(1) as f32))
-            / columns as f32)
-            .max(180.0);
-        let tile_size = Vec2::new(tile_width, 220.0);
-        let mut selected = None;
+        if self
+            .selected_compare_index
+            .and_then(|index| self.compare_tiles.get(index))
+            .and_then(|tile| tile.selection.as_ref())
+            .is_none()
+        {
+            self.selected_compare_index = self
+                .compare_tiles
+                .iter()
+                .position(|tile| matches!(tile.state, CompareTileState::Ready));
+        }
 
-        ScrollArea::vertical().show(ui, |ui| {
-            let mut index = 0usize;
-            while index < self.compare_tiles.len() {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = gap;
-                    for _ in 0..columns {
-                        if index >= self.compare_tiles.len() {
-                            break;
-                        }
-                        if compare_tile(ui, &mut self.compare_tiles[index], tile_size) {
-                            selected = Some(index);
-                        }
-                        index += 1;
-                    }
+        let available = ui.available_size();
+        let gap = 14.0;
+        let mut selected = None;
+        let mut apply = None;
+
+        if available.x >= 820.0 {
+            let grid_width = (available.x * 0.38).clamp(300.0, 430.0);
+            let detail_width = (available.x - grid_width - gap).max(360.0);
+
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                ui.vertical(|ui| {
+                    ui.set_width(grid_width);
+                    ui.set_height(available.y);
+                    selected = self.show_compare_tile_grid(ui, true);
                 });
-                ui.add_space(gap);
-            }
-        });
+                ui.vertical(|ui| {
+                    ui.set_width(detail_width);
+                    ui.set_height(available.y);
+                    apply = self.show_compare_detail(ui);
+                });
+            });
+        } else {
+            ScrollArea::vertical().show(ui, |ui| {
+                apply = self.show_compare_detail(ui);
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(12.0);
+                selected = self.show_compare_tile_grid(ui, false);
+            });
+        }
 
         if let Some(index) = selected {
+            self.selected_compare_index = Some(index);
+        }
+
+        if let Some(index) = apply {
             let ctx = ui.ctx().clone();
             self.apply_compare_tile(&ctx, index);
         }
+    }
+
+    fn show_compare_tile_grid(&mut self, ui: &mut egui::Ui, scroll: bool) -> Option<usize> {
+        if scroll {
+            ScrollArea::vertical()
+                .show(ui, |ui| self.show_compare_tile_grid_contents(ui))
+                .inner
+        } else {
+            self.show_compare_tile_grid_contents(ui)
+        }
+    }
+
+    fn show_compare_tile_grid_contents(&mut self, ui: &mut egui::Ui) -> Option<usize> {
+        let available_width = ui.available_width().max(220.0);
+        let gap = 10.0;
+        let min_tile_width = 280.0;
+        let columns = ((available_width + gap) / (min_tile_width + gap))
+            .floor()
+            .max(1.0) as usize;
+        let tile_width = ((available_width - gap * (columns.saturating_sub(1) as f32))
+            / columns as f32)
+            .max(available_width.min(min_tile_width));
+        let tile_size = Vec2::new(tile_width, 260.0);
+        let mut selected = None;
+        let mut index = 0usize;
+
+        while index < self.compare_tiles.len() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                for _ in 0..columns {
+                    if index >= self.compare_tiles.len() {
+                        break;
+                    }
+                    let is_selected = self.selected_compare_index == Some(index);
+                    if compare_tile(ui, &mut self.compare_tiles[index], tile_size, is_selected) {
+                        selected = Some(index);
+                    }
+                    index += 1;
+                }
+            });
+            ui.add_space(gap);
+        }
+
+        selected
+    }
+
+    fn show_compare_detail(&self, ui: &mut egui::Ui) -> Option<usize> {
+        let Some(index) = self.selected_compare_index else {
+            stage_placeholder(ui, "Select a rendered Compare option to inspect stages.");
+            return None;
+        };
+        let Some(tile) = self.compare_tiles.get(index) else {
+            stage_placeholder(ui, "Select a rendered Compare option to inspect stages.");
+            return None;
+        };
+        let Some(selection) = tile.selection.as_ref() else {
+            stage_placeholder(ui, "This Compare option is not ready yet.");
+            return None;
+        };
+
+        let mut apply = false;
+        Frame::new()
+            .fill(CANVAS_PANEL)
+            .stroke(Stroke::new(1.0, Color32::from_rgb(196, 192, 181)))
+            .inner_margin(Margin::same(12))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(&tile.label)
+                            .strong()
+                            .size(16.0)
+                            .color(Color32::from_rgb(52, 56, 52)),
+                    );
+                    ui.label(
+                        RichText::new(&tile.detail)
+                            .small()
+                            .color(Color32::from_rgb(101, 105, 96)),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new("Use this setting")
+                                    .min_size(Vec2::new(128.0, 30.0)),
+                            )
+                            .on_hover_text("Apply this Compare option as the current result.")
+                            .clicked()
+                        {
+                            apply = true;
+                        }
+                    });
+                });
+                ui.label(
+                    RichText::new(compare_tile_status_text(tile))
+                        .small()
+                        .color(compare_tile_status_color(tile)),
+                );
+                ui.add_space(10.0);
+
+                let stages = if matches!(selection.line_extractor, LineExtractorChoice::Classic) {
+                    vec![
+                        ("Input", self.original_texture.as_ref(), "Input pending"),
+                        ("Lines", tile.line_texture.as_ref(), "Lines pending"),
+                        (
+                            "Direction",
+                            tile.orientation_texture.as_ref(),
+                            "Direction pending",
+                        ),
+                        ("ASCII", tile.ascii_texture.as_ref(), "ASCII pending"),
+                    ]
+                } else {
+                    vec![
+                        (
+                            "AI lineart",
+                            tile.ai_lineart_texture.as_ref(),
+                            "AI lineart pending",
+                        ),
+                        ("1px lines", tile.line_texture.as_ref(), "1px lines pending"),
+                        (
+                            "Direction",
+                            tile.orientation_texture.as_ref(),
+                            "Direction pending",
+                        ),
+                        ("ASCII", tile.ascii_texture.as_ref(), "ASCII pending"),
+                    ]
+                };
+                compare_stage_grid(ui, &stages);
+            });
+
+        apply.then_some(index)
     }
 
     fn apply_compare_tile(&mut self, ctx: &egui::Context, index: usize) {
@@ -2700,6 +2890,10 @@ fn compare_tile_for_spec(
             CompareTileState::Skipped("Install model first".to_owned())
         },
         texture: None,
+        ai_lineart_texture: None,
+        line_texture: None,
+        orientation_texture: None,
+        ascii_texture: None,
         selection: None,
     }
 }
@@ -3194,7 +3388,12 @@ fn preview_tab(ui: &mut egui::Ui, selected: &mut PreviewTab, tab: PreviewTab) {
     }
 }
 
-fn compare_tile(ui: &mut egui::Ui, tile: &mut CompareTile, tile_size: Vec2) -> bool {
+fn compare_tile(
+    ui: &mut egui::Ui,
+    tile: &mut CompareTile,
+    tile_size: Vec2,
+    selected: bool,
+) -> bool {
     let is_ready = matches!(tile.state, CompareTileState::Ready);
     let sense = if is_ready {
         egui::Sense::click()
@@ -3203,19 +3402,21 @@ fn compare_tile(ui: &mut egui::Ui, tile: &mut CompareTile, tile_size: Vec2) -> b
     };
     let (rect, response) = ui.allocate_exact_size(tile_size, sense);
     let painter = ui.painter_at(rect);
-    let fill = if is_ready && response.hovered() {
+    let fill = if selected {
+        Color32::from_rgb(232, 238, 236)
+    } else if is_ready && response.hovered() {
         Color32::from_rgb(236, 232, 222)
     } else {
         CANVAS_PANEL
     };
+    let stroke = if selected {
+        Stroke::new(2.0, ACCENT_STRONG)
+    } else {
+        Stroke::new(1.0, Color32::from_rgb(196, 192, 181))
+    };
 
     painter.rect_filled(rect, 0.0, fill);
-    painter.rect_stroke(
-        rect,
-        0.0,
-        Stroke::new(1.0, Color32::from_rgb(196, 192, 181)),
-        egui::StrokeKind::Inside,
-    );
+    painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Inside);
 
     let content = rect.shrink(10.0);
     painter.text(
@@ -3274,6 +3475,34 @@ fn compare_tile(ui: &mut egui::Ui, tile: &mut CompareTile, tile_size: Vec2) -> b
     }
 
     is_ready && response.clicked()
+}
+
+fn compare_stage_grid(ui: &mut egui::Ui, stages: &[(&str, Option<&TextureHandle>, &str)]) {
+    let available_width = ui.available_width().max(260.0);
+    let gap = 12.0;
+    let columns: usize = if available_width >= 560.0 { 2 } else { 1 };
+    let pane_width =
+        ((available_width - gap * (columns.saturating_sub(1) as f32)) / columns as f32).max(240.0);
+    let pane_height = if columns == 2 { 240.0 } else { 280.0 };
+    let pane_size = Vec2::new(pane_width, pane_height);
+
+    let mut index = 0usize;
+    while index < stages.len() {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for _ in 0..columns {
+                if index >= stages.len() {
+                    break;
+                }
+                let (label, texture, placeholder) = stages[index];
+                texture_pane(ui, Some(label), texture, placeholder, pane_size, true);
+                index += 1;
+            }
+        });
+        if index < stages.len() {
+            ui.add_space(gap);
+        }
+    }
 }
 
 fn compare_tile_status_text(tile: &CompareTile) -> String {
