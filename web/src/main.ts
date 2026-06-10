@@ -261,6 +261,9 @@ const modelManager = element<HTMLElement>("model-manager");
 const modelStatusLabel = element<HTMLElement>("model-status-label");
 const modelStatusDetail = element<HTMLElement>("model-status-detail");
 const installModelButton = element<HTMLButtonElement>("install-model");
+const allModelsStatusLabel = element<HTMLElement>("all-models-status-label");
+const allModelsStatusDetail = element<HTMLElement>("all-models-status-detail");
+const installAllModelsButton = element<HTMLButtonElement>("install-all-models");
 const resultView = element<HTMLElement>("result-view");
 const compareView = element<HTMLElement>("compare-view");
 const compareGrid = element<HTMLElement>("compare-grid");
@@ -285,6 +288,9 @@ let modelCatalog: ModelCatalog | null = null;
 let modelStatuses = new Map<ModelId, ModelStatus>();
 let installingModel: ModelId | null = null;
 let installProgress: InstallProgress | null = null;
+let installingAllModels = false;
+let installAllIndex = 0;
+let installAllTotal = 0;
 let worker: Worker | null = null;
 let activeJobId = 0;
 let busy = false;
@@ -368,6 +374,7 @@ function wireControls(): void {
   }
 
   installModelButton.addEventListener("click", () => void installSelectedModel());
+  installAllModelsButton.addEventListener("click", () => void installAllModels());
   addBatchButton.addEventListener("click", () => batchInput.click());
   clearBatchButton.addEventListener("click", clearBatch);
   batchList.addEventListener("click", (event) => {
@@ -548,12 +555,85 @@ async function installSelectedModel(): Promise<void> {
       syncControls();
     });
     modelStatuses = await allModelStatuses(modelCatalog);
+    refreshCompareTilesAfterModelInstall();
     setStatus(`${entry.name} installed`);
   } catch (error) {
     setStatus(error instanceof Error ? error.message : String(error), true);
   } finally {
     installingModel = null;
     installProgress = null;
+    syncControls();
+  }
+}
+
+async function installAllModels(): Promise<void> {
+  if (!modelCatalog || isBusy()) {
+    return;
+  }
+
+  const catalog = modelCatalog;
+  const targets = modelOrder
+    .map((id) => modelEntry(catalog, id))
+    .filter((entry) => modelStatuses.get(entry.id)?.kind !== "installed");
+
+  if (targets.length === 0) {
+    setStatus("All models are already installed.");
+    syncControls();
+    return;
+  }
+
+  installingAllModels = true;
+  installAllIndex = 0;
+  installAllTotal = modelOrder.length;
+  let installed = 0;
+  const failed: string[] = [];
+  syncControls();
+
+  try {
+    for (const [index, entry] of targets.entries()) {
+      const modelIndex = modelOrder.indexOf(entry.id);
+      installAllIndex = modelIndex >= 0 ? modelIndex + 1 : index + 1;
+      installingModel = entry.id;
+      installProgress = null;
+      setStatus(`Installing ${installAllIndex}/${installAllTotal} ${entry.name}`);
+      syncControls();
+
+      try {
+        await installModel(entry, (progress) => {
+          installProgress = progress;
+          setStatus(
+            `Installing ${installAllIndex}/${installAllTotal} ${entry.name}: ${progress.percent.toFixed(
+              0,
+            )}% (${formatBytes(progress.downloaded)}/${formatBytes(progress.total)})`,
+          );
+          syncControls();
+        });
+        installed += 1;
+      } catch (error) {
+        failed.push(entry.name);
+        setStatus(
+          `${installAllIndex}/${installAllTotal} ${entry.name} install failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          true,
+        );
+      }
+    }
+
+    modelStatuses = await allModelStatuses(catalog);
+    refreshCompareTilesAfterModelInstall();
+    setStatus(
+      failed.length === 0
+        ? `Installed ${installed} model(s), 0 failed`
+        : `Installed ${installed} model(s), ${failed.length} failed: ${failed.join(", ")}`,
+      failed.length > 0,
+    );
+  } finally {
+    installingAllModels = false;
+    installingModel = null;
+    installProgress = null;
+    installAllIndex = 0;
+    installAllTotal = 0;
     syncControls();
   }
 }
@@ -993,6 +1073,7 @@ function syncControls(): void {
   cleanupRow.hidden = !isAi;
   modelManager.hidden = !isAi;
   renderModelStatus();
+  renderAllModelsStatus();
   updateButtons();
 }
 
@@ -1027,6 +1108,56 @@ function renderModelStatus(): void {
     "Downloads from the verified AA Converter third-party model mirror. See THIRD_PARTY_NOTICES.md.";
 }
 
+function renderAllModelsStatus(): void {
+  const total = modelOrder.length;
+  const installed = modelOrder.filter((id) => modelStatuses.get(id)?.kind === "installed").length;
+  const missing = total - installed;
+  allModelsStatusLabel.textContent = `Models: ${installed}/${total} installed`;
+
+  if (installingAllModels && installingModel && installAllTotal > 0) {
+    const entry = modelCatalog ? modelEntry(modelCatalog, installingModel) : null;
+    allModelsStatusDetail.textContent = installProgress
+      ? `Installing ${installAllIndex}/${installAllTotal} ${entry?.name ?? installingModel} · ${formatBytes(
+          installProgress.downloaded,
+        )} / ${formatBytes(installProgress.total)}`
+      : `Installing ${installAllIndex}/${installAllTotal} ${entry?.name ?? installingModel}`;
+  } else if (missing === 0) {
+    allModelsStatusDetail.textContent = "All optional AI models are installed.";
+  } else {
+    allModelsStatusDetail.textContent = `${missing} model(s) need install or repair.`;
+  }
+
+  installAllModelsButton.disabled = isBusy() || !modelCatalog || missing === 0;
+  installAllModelsButton.textContent =
+    installingAllModels && installAllTotal > 0
+      ? `Installing ${installAllIndex}/${installAllTotal}`
+      : missing === 0
+        ? "All models installed"
+        : "Install all models";
+  installAllModelsButton.title =
+    "Install every missing or repair-needed verified third-party model mirror.";
+}
+
+function refreshCompareTilesAfterModelInstall(): void {
+  let changed = false;
+  for (const tile of compareTiles) {
+    const extractor = tile.selection.lineExtractor;
+    if (
+      tile.state === "skipped" &&
+      extractor !== "builtin" &&
+      modelStatuses.get(extractor)?.kind === "installed"
+    ) {
+      tile.state = "pending";
+      tile.statusText = "Pending";
+      changed = true;
+    }
+  }
+  if (changed) {
+    compareProgress.textContent = "Newly installed model candidates are ready to compare.";
+    renderCompareGrid();
+  }
+}
+
 function canUseCurrentSettings(): boolean {
   if (selectedLineExtractor === "builtin") {
     return true;
@@ -1035,7 +1166,7 @@ function canUseCurrentSettings(): boolean {
 }
 
 function isBusy(): boolean {
-  return busy || installingModel !== null;
+  return busy || installingModel !== null || installingAllModels;
 }
 
 function syncSliderOutputs(): void {

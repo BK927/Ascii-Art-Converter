@@ -213,18 +213,29 @@ enum BatchMessage {
 enum DownloadMessage {
     Progress {
         model: LineartModel,
+        index: usize,
+        total_models: usize,
         downloaded: u64,
         total: u64,
     },
     Finished {
         model: LineartModel,
+        index: usize,
+        total_models: usize,
         result: Result<PathBuf, String>,
+    },
+    FinishedAll {
+        installed: usize,
+        failed: usize,
+        failed_models: Vec<String>,
     },
 }
 
 #[derive(Debug, Clone)]
 struct ModelDownloadState {
     model: LineartModel,
+    index: usize,
+    total_models: usize,
     downloaded: u64,
     total: u64,
 }
@@ -436,23 +447,126 @@ impl AaApp {
             let result = manager.download_model(model, |progress: DownloadProgress| {
                 let _ = sender.send(DownloadMessage::Progress {
                     model,
+                    index: 1,
+                    total_models: 1,
                     downloaded: progress.downloaded,
                     total: progress.total,
                 });
             });
+            let installed = usize::from(result.is_ok());
+            let failed = usize::from(result.is_err());
+            let failed_models = if result.is_err() {
+                vec![model.label().to_owned()]
+            } else {
+                Vec::new()
+            };
             let _ = sender.send(DownloadMessage::Finished {
                 model,
+                index: 1,
+                total_models: 1,
                 result: result.map_err(|err| err.to_string()),
+            });
+            let _ = sender.send(DownloadMessage::FinishedAll {
+                installed,
+                failed,
+                failed_models,
             });
         });
 
         self.download_pending = Some(receiver);
         self.download_progress = Some(ModelDownloadState {
             model,
+            index: 1,
+            total_models: 1,
             downloaded: 0,
             total: 0,
         });
         self.status = format!("Starting {} install...", model.label());
+    }
+
+    fn start_all_model_downloads(&mut self) {
+        if self.is_busy() {
+            return;
+        }
+
+        let Some(manager) = self.model_manager.clone() else {
+            self.status = "Model catalog is unavailable.".to_owned();
+            return;
+        };
+
+        let models: Vec<(usize, LineartModel)> = LineartModel::ALL
+            .into_iter()
+            .enumerate()
+            .filter(|model| {
+                let model = model.1;
+                self.model_availability
+                    .iter()
+                    .find(|item| item.entry.id == model.id())
+                    .map(|item| !item.status.is_available())
+                    .unwrap_or(true)
+            })
+            .collect();
+
+        if models.is_empty() {
+            self.status = "All models are already installed.".to_owned();
+            return;
+        }
+
+        let total_models = LineartModel::ALL.len();
+        let (first_offset, first_model) = models[0];
+        let first_index = first_offset + 1;
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let mut installed = 0usize;
+            let mut failed = 0usize;
+            let mut failed_models = Vec::new();
+
+            for (offset, model) in models {
+                let index = offset + 1;
+                let result = manager.download_model(model, |progress: DownloadProgress| {
+                    let _ = sender.send(DownloadMessage::Progress {
+                        model,
+                        index,
+                        total_models,
+                        downloaded: progress.downloaded,
+                        total: progress.total,
+                    });
+                });
+
+                if result.is_ok() {
+                    installed += 1;
+                } else {
+                    failed += 1;
+                    failed_models.push(model.label().to_owned());
+                }
+
+                let _ = sender.send(DownloadMessage::Finished {
+                    model,
+                    index,
+                    total_models,
+                    result: result.map_err(|err| err.to_string()),
+                });
+            }
+
+            let _ = sender.send(DownloadMessage::FinishedAll {
+                installed,
+                failed,
+                failed_models,
+            });
+        });
+
+        self.download_pending = Some(receiver);
+        self.download_progress = Some(ModelDownloadState {
+            model: first_model,
+            index: first_index,
+            total_models,
+            downloaded: 0,
+            total: 0,
+        });
+        self.status = format!(
+            "Installing {first_index}/{total_models} {}...",
+            first_model.label()
+        );
     }
 
     fn open_font(&mut self) {
@@ -969,34 +1083,62 @@ impl AaApp {
             match receiver.try_recv() {
                 Ok(DownloadMessage::Progress {
                     model,
+                    index,
+                    total_models,
                     downloaded,
                     total,
                 }) => {
                     self.download_progress = Some(ModelDownloadState {
                         model,
+                        index,
+                        total_models,
                         downloaded,
                         total,
                     });
                     self.status = format!(
-                        "Installing {}: {} / {}",
+                        "Installing {index}/{total_models} {} · {} / {}",
                         model.label(),
                         format_bytes(downloaded),
                         format_bytes(total)
                     );
                 }
-                Ok(DownloadMessage::Finished { model, result }) => {
-                    self.download_progress = None;
-                    match result {
-                        Ok(path) => {
-                            self.refresh_model_availability();
-                            self.status =
-                                format!("{} ready: {}", model.label(), compact_path(&path));
-                        }
-                        Err(err) => {
-                            self.refresh_model_availability();
-                            self.status = format!("{} install failed: {err}", model.label());
-                        }
+                Ok(DownloadMessage::Finished {
+                    model,
+                    index,
+                    total_models,
+                    result,
+                }) => match result {
+                    Ok(path) => {
+                        self.refresh_model_availability();
+                        self.status = format!(
+                            "Installed {index}/{total_models} {}: {}",
+                            model.label(),
+                            compact_path(&path)
+                        );
                     }
+                    Err(err) => {
+                        self.refresh_model_availability();
+                        self.status = format!(
+                            "{index}/{total_models} {} install failed: {err}",
+                            model.label()
+                        );
+                    }
+                },
+                Ok(DownloadMessage::FinishedAll {
+                    installed,
+                    failed,
+                    failed_models,
+                }) => {
+                    self.download_progress = None;
+                    self.refresh_model_availability();
+                    self.status = if failed_models.is_empty() {
+                        format!("Installed {installed} model(s), {failed} failed")
+                    } else {
+                        format!(
+                            "Installed {installed} model(s), {failed} failed: {}",
+                            failed_models.join(", ")
+                        )
+                    };
                     break;
                 }
                 Err(TryRecvError::Empty) => {
@@ -1219,6 +1361,7 @@ impl AaApp {
 
         section_label(ui, "Line Extraction");
         self.line_extractor_controls(ui);
+        self.model_install_controls(ui);
         self.line_source_mode_controls(ui);
         egui::CollapsingHeader::new(
             RichText::new("Advanced tuning  ?")
@@ -1633,6 +1776,52 @@ impl AaApp {
             .on_hover_text(line_extractor_help(self.line_extractor));
     }
 
+    fn model_install_controls(&mut self, ui: &mut egui::Ui) {
+        let installed = self
+            .model_availability
+            .iter()
+            .filter(|item| item.status.is_available())
+            .count();
+        let total = LineartModel::ALL.len();
+        let missing = total.saturating_sub(installed);
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(format!("Models: {installed}/{total} installed"))
+                    .small()
+                    .color(SIDEBAR_MUTED),
+            );
+
+            if let Some(progress) = &self.download_progress {
+                ui.label(
+                    RichText::new(format!(
+                        "Installing {}/{} {} · {} / {}",
+                        progress.index,
+                        progress.total_models,
+                        progress.model.label(),
+                        format_bytes(progress.downloaded),
+                        format_bytes(progress.total)
+                    ))
+                    .small()
+                    .color(SIDEBAR_TEXT),
+                );
+            }
+        });
+
+        if ui
+            .add_enabled(
+                !self.is_busy() && missing > 0,
+                egui::Button::new("Install all models"),
+            )
+            .on_hover_text(
+                "Install every missing or repair-needed verified third-party model mirror.",
+            )
+            .clicked()
+        {
+            self.start_all_model_downloads();
+        }
+    }
+
     fn line_source_mode_controls(&mut self, ui: &mut egui::Ui) {
         if matches!(self.line_extractor, LineExtractorChoice::Classic) {
             if self.config.input_mode == InputMode::NormalizeAiLineart {
@@ -1726,7 +1915,9 @@ impl AaApp {
                 if let Some(progress) = &self.download_progress {
                     ui.label(
                         RichText::new(format!(
-                            "{} {} / {}",
+                            "{}/{} {} {} / {}",
+                            progress.index,
+                            progress.total_models,
                             progress.model.label(),
                             format_bytes(progress.downloaded),
                             format_bytes(progress.total)
@@ -1903,7 +2094,9 @@ impl AaApp {
                 ui.spinner();
                 let message = if let Some(progress) = &self.download_progress {
                     format!(
-                        "Installing {}... {} / {}",
+                        "Installing {}/{} {}... {} / {}",
+                        progress.index,
+                        progress.total_models,
                         progress.model.label(),
                         format_bytes(progress.downloaded),
                         format_bytes(progress.total)
