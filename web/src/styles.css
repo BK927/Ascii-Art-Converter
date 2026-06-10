@@ -384,6 +384,7 @@ textarea {
 .preview-area {
   display: grid;
   gap: 10px;
+  min-height: 0;
 }
 
 .preview-tabs {
@@ -567,7 +568,9 @@ canvas.filled {
 
 .compare-view {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
+  min-height: calc(100vh - 160px);
 }
 
 .compare-view[hidden] {
@@ -604,6 +607,7 @@ canvas.filled {
     "detail"
     "grid";
   gap: 14px;
+  min-height: 0;
 }
 
 .compare-grid {
@@ -611,10 +615,12 @@ canvas.filled {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 12px;
+  min-height: 0;
 }
 
 .compare-detail {
   grid-area: detail;
+  min-height: 0;
   min-width: 0;
 }
 
@@ -820,10 +826,23 @@ canvas.filled {
 }
 
 @media (min-width: 980px) {
+  .compare-view {
+    height: calc(100vh - 160px);
+    min-height: 560px;
+  }
+
   .compare-layout {
     grid-template-areas: "grid detail";
     grid-template-columns: minmax(280px, 0.9fr) minmax(460px, 1.35fr);
     align-items: start;
+    overflow: hidden;
+  }
+
+  .compare-grid,
+  .compare-detail {
+    max-height: 100%;
+    overflow: auto;
+    padding-right: 4px;
   }
 
   .compare-stage-grid {

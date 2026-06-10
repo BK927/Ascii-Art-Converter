@@ -2320,27 +2320,35 @@ impl AaApp {
 
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
-                ui.vertical(|ui| {
-                    ui.set_width(grid_width);
-                    ui.set_height(available.y);
-                    selected = self.show_compare_tile_grid(ui, true);
-                });
-                ui.vertical(|ui| {
-                    ui.set_width(detail_width);
-                    ui.set_height(available.y);
-                    apply = ScrollArea::vertical()
-                        .show(ui, |ui| self.show_compare_detail(ui))
-                        .inner;
-                });
+                ui.allocate_ui_with_layout(
+                    Vec2::new(grid_width, available.y),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        selected = self.show_compare_tile_grid(ui, true);
+                    },
+                );
+                ui.allocate_ui_with_layout(
+                    Vec2::new(detail_width, available.y),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        apply = ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .max_height(available.y)
+                            .show(ui, |ui| self.show_compare_detail(ui))
+                            .inner;
+                    },
+                );
             });
         } else {
-            ScrollArea::vertical().show(ui, |ui| {
-                apply = self.show_compare_detail(ui);
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(12.0);
-                selected = self.show_compare_tile_grid(ui, false);
-            });
+            ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    apply = self.show_compare_detail(ui);
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(12.0);
+                    selected = self.show_compare_tile_grid(ui, false);
+                });
         }
 
         if let Some(index) = selected {
@@ -2356,6 +2364,7 @@ impl AaApp {
     fn show_compare_tile_grid(&mut self, ui: &mut egui::Ui, scroll: bool) -> Option<usize> {
         if scroll {
             ScrollArea::vertical()
+                .auto_shrink([false, false])
                 .show(ui, |ui| self.show_compare_tile_grid_contents(ui))
                 .inner
         } else {
