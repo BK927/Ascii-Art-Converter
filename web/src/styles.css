@@ -708,6 +708,7 @@ canvas.filled {
 }
 
 .compare-stage-media {
+  position: relative;
   display: block;
   padding: 0;
   overflow: hidden;
@@ -722,6 +723,20 @@ canvas.filled {
   display: block;
   border: 0;
   border-radius: 0;
+}
+
+.stage-open-label {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  padding: 4px 8px;
+  color: #1d3434;
+  font-size: 12px;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(0, 127, 130, 0.22);
+  border-radius: 999px;
+  pointer-events: none;
 }
 
 .compare-tile {
@@ -777,6 +792,16 @@ canvas.filled {
 .compare-tile-foot {
   color: var(--muted);
   font-size: 12px;
+}
+
+.compare-tile-head .compare-selected-badge {
+  justify-self: start;
+  padding: 2px 7px;
+  color: var(--teal-dark);
+  font-weight: 700;
+  background: rgba(0, 127, 130, 0.1);
+  border: 1px solid rgba(0, 127, 130, 0.22);
+  border-radius: 999px;
 }
 
 .compare-tile canvas {

@@ -1427,6 +1427,12 @@ function renderCompareGrid(): void {
       const detail = document.createElement("span");
       detail.textContent = tile.detail;
       head.append(title, detail);
+      if (selectedCompareIndex === tile.index) {
+        const badge = document.createElement("span");
+        badge.className = "compare-selected-badge";
+        badge.textContent = "Selected";
+        head.append(badge);
+      }
 
       if (tile.result) {
         const canvas = document.createElement("canvas");
@@ -1459,7 +1465,7 @@ function renderCompareDetail(): void {
   header.className = "compare-detail-head";
   const titleWrap = document.createElement("div");
   const title = document.createElement("h3");
-  title.textContent = tile.label;
+  title.textContent = `Selected: ${tile.label}`;
   const detail = document.createElement("span");
   detail.textContent = `${tile.detail} · ${tile.statusText}`;
   titleWrap.append(title, detail);
@@ -1474,6 +1480,9 @@ function renderCompareDetail(): void {
   const pipeline = document.createElement("p");
   pipeline.className = "compare-pipeline";
   pipeline.textContent = comparePipelineLabel(tile.selection);
+  const zoomHint = document.createElement("p");
+  zoomHint.className = "compare-pipeline";
+  zoomHint.textContent = "Click any stage image to open a larger preview.";
 
   const stages = document.createElement("div");
   stages.className = "compare-stage-grid";
@@ -1551,7 +1560,7 @@ function renderCompareDetail(): void {
     stages.append(compareStage(stage.label, stage.bytes, stage.width, stage.height, stage.placeholder));
   }
 
-  article.append(header, pipeline, stages);
+  article.append(header, pipeline, zoomHint, stages);
   compareDetail.replaceChildren(article);
 }
 
@@ -1581,7 +1590,10 @@ function compareStage(
     media.title = "Open larger preview";
     const canvas = document.createElement("canvas");
     renderRgba(canvas, bytes, width, height);
-    media.append(canvas);
+    const zoomLabel = document.createElement("span");
+    zoomLabel.className = "stage-open-label";
+    zoomLabel.textContent = "Open larger";
+    media.append(canvas, zoomLabel);
     media.addEventListener("click", () => {
       openStageZoom(labelText, bytes, width, height);
     });

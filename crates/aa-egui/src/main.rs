@@ -2314,8 +2314,8 @@ impl AaApp {
         let mut selected = None;
         let mut apply = None;
 
-        if available.x >= 820.0 {
-            let grid_width = (available.x * 0.38).clamp(300.0, 430.0);
+        if available.x >= 640.0 {
+            let grid_width = (available.x * 0.36).clamp(300.0, 390.0);
             let detail_width = (available.x - grid_width - gap).max(360.0);
 
             ui.horizontal(|ui| {
@@ -2470,7 +2470,7 @@ impl AaApp {
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
-                        RichText::new(&label)
+                        RichText::new(format!("Selected: {label}"))
                             .strong()
                             .size(16.0)
                             .color(Color32::from_rgb(52, 56, 52)),
@@ -2502,6 +2502,11 @@ impl AaApp {
                 );
                 ui.label(
                     RichText::new(compare_pipeline_label(line_extractor))
+                        .small()
+                        .color(Color32::from_rgb(92, 96, 88)),
+                );
+                ui.label(
+                    RichText::new("Click any stage image to open a larger preview.")
                         .small()
                         .color(Color32::from_rgb(92, 96, 88)),
                 );
@@ -3540,6 +3545,15 @@ fn compare_tile(
         FontId::new(11.0, FontFamily::Proportional),
         compare_tile_status_color(tile),
     );
+    if selected {
+        painter.text(
+            content.right_top(),
+            egui::Align2::RIGHT_TOP,
+            "Selected",
+            FontId::new(11.0, FontFamily::Proportional),
+            ACCENT_STRONG,
+        );
+    }
 
     let image_rect = egui::Rect::from_min_max(
         egui::pos2(content.left(), content.top() + 58.0),
@@ -3664,6 +3678,22 @@ fn compare_stage_pane(ui: &mut egui::Ui, stage: &CompareStageItem, pane_size: Ve
             image_rect,
             egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
             Color32::WHITE,
+        );
+        let hint_rect = egui::Rect::from_min_size(
+            egui::pos2(content_rect.left() + 8.0, content_rect.bottom() - 28.0),
+            Vec2::new(108.0, 20.0),
+        );
+        painter.rect_filled(
+            hint_rect,
+            3.0,
+            Color32::from_rgba_premultiplied(255, 255, 255, 220),
+        );
+        painter.text(
+            hint_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Click to zoom",
+            FontId::new(11.0, FontFamily::Proportional),
+            Color32::from_rgb(60, 72, 70),
         );
     } else {
         let placeholder_rect = content_rect.shrink(12.0);
