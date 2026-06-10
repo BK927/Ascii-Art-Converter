@@ -666,6 +666,12 @@ canvas.filled {
   white-space: nowrap;
 }
 
+.compare-pipeline {
+  margin: -4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .compare-apply {
   min-width: 132px;
   color: #ffffff;
@@ -681,7 +687,7 @@ canvas.filled {
 
 .compare-stage {
   display: grid;
-  grid-template-rows: auto minmax(220px, 1fr);
+  grid-template-rows: auto minmax(300px, 1fr);
   gap: 8px;
   min-width: 0;
 }
@@ -692,13 +698,30 @@ canvas.filled {
   font-weight: 700;
 }
 
-.compare-stage canvas,
+.compare-stage-media,
 .compare-stage .compare-placeholder {
   width: 100%;
-  min-height: 220px;
+  min-height: 300px;
   border: 1px solid #d7dde0;
   border-radius: 6px;
   background: #f9fbfb;
+}
+
+.compare-stage-media {
+  display: block;
+  padding: 0;
+  overflow: hidden;
+  cursor: zoom-in;
+}
+
+.compare-stage-media:hover {
+  border-color: var(--teal);
+}
+
+.compare-stage-media canvas {
+  display: block;
+  border: 0;
+  border-radius: 0;
 }
 
 .compare-tile {
@@ -781,6 +804,63 @@ canvas.filled {
   .compare-stage-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+.stage-zoom[hidden] {
+  display: none;
+}
+
+.stage-zoom {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.stage-zoom-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: rgba(14, 20, 22, 0.62);
+}
+
+.stage-zoom-panel {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  width: min(1180px, 96vw);
+  height: min(820px, 92vh);
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+}
+
+.stage-zoom-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.stage-zoom-head h2 {
+  margin: 0;
+  overflow: hidden;
+  font-size: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#stage-zoom-canvas {
+  min-height: 0;
 }
 
 #stats-list {

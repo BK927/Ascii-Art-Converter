@@ -86,6 +86,7 @@ struct AaApp {
     compare_tiles: Vec<CompareTile>,
     compare_progress: Option<CompareProgress>,
     selected_compare_index: Option<usize>,
+    compare_zoom: Option<CompareZoom>,
     original_texture: Option<TextureHandle>,
     ai_lineart_texture: Option<TextureHandle>,
     ai_lineart_preview: Option<RgbaImage>,
@@ -148,6 +149,32 @@ struct CompareTile {
     orientation_texture: Option<TextureHandle>,
     ascii_texture: Option<TextureHandle>,
     selection: Option<CompareSelection>,
+}
+
+#[derive(Clone)]
+struct CompareZoom {
+    label: String,
+    texture: TextureHandle,
+}
+
+struct CompareStageItem {
+    label: String,
+    texture: Option<TextureHandle>,
+    placeholder: String,
+}
+
+impl CompareStageItem {
+    fn new(
+        label: impl Into<String>,
+        texture: Option<TextureHandle>,
+        placeholder: impl Into<String>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            texture,
+            placeholder: placeholder.into(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -298,6 +325,7 @@ impl AaApp {
             compare_tiles: Vec::new(),
             compare_progress: None,
             selected_compare_index: None,
+            compare_zoom: None,
             original_texture: None,
             ai_lineart_texture: None,
             ai_lineart_preview: None,
@@ -325,6 +353,7 @@ impl AaApp {
                 self.compare_tiles.clear();
                 self.compare_progress = None;
                 self.selected_compare_index = None;
+                self.compare_zoom = None;
                 self.result = None;
                 self.status = format!("Loaded {}", compact_path(&path));
                 self.preview_tab = PreviewTab::Result;
@@ -2299,7 +2328,9 @@ impl AaApp {
                 ui.vertical(|ui| {
                     ui.set_width(detail_width);
                     ui.set_height(available.y);
-                    apply = self.show_compare_detail(ui);
+                    apply = ScrollArea::vertical()
+                        .show(ui, |ui| self.show_compare_detail(ui))
+                        .inner;
                 });
             });
         } else {
@@ -2366,7 +2397,7 @@ impl AaApp {
         selected
     }
 
-    fn show_compare_detail(&self, ui: &mut egui::Ui) -> Option<usize> {
+    fn show_compare_detail(&mut self, ui: &mut egui::Ui) -> Option<usize> {
         let Some(index) = self.selected_compare_index else {
             stage_placeholder(ui, "Select a rendered Compare option to inspect stages.");
             return None;
@@ -2380,7 +2411,58 @@ impl AaApp {
             return None;
         };
 
+        let label = tile.label.clone();
+        let detail = tile.detail.clone();
+        let status_text = compare_tile_status_text(tile);
+        let status_color = compare_tile_status_color(tile);
+        let line_extractor = selection.line_extractor;
+        let stages = if matches!(line_extractor, LineExtractorChoice::Classic) {
+            vec![
+                CompareStageItem::new("1 Source", self.original_texture.clone(), "Source pending"),
+                CompareStageItem::new(
+                    "2 Built-in matcher lines",
+                    tile.line_texture.clone(),
+                    "Matcher lines pending",
+                ),
+                CompareStageItem::new(
+                    "3 Direction map",
+                    tile.orientation_texture.clone(),
+                    "Direction pending",
+                ),
+                CompareStageItem::new(
+                    "4 ASCII from lines",
+                    tile.ascii_texture.clone(),
+                    "ASCII pending",
+                ),
+            ]
+        } else {
+            vec![
+                CompareStageItem::new("1 Source", self.original_texture.clone(), "Source pending"),
+                CompareStageItem::new(
+                    "2 AI extracted lineart",
+                    tile.ai_lineart_texture.clone(),
+                    "AI lineart pending",
+                ),
+                CompareStageItem::new(
+                    "3 1px cleanup matcher lines",
+                    tile.line_texture.clone(),
+                    "Matcher lines pending",
+                ),
+                CompareStageItem::new(
+                    "4 Direction map",
+                    tile.orientation_texture.clone(),
+                    "Direction pending",
+                ),
+                CompareStageItem::new(
+                    "5 ASCII from lines",
+                    tile.ascii_texture.clone(),
+                    "ASCII pending",
+                ),
+            ]
+        };
+
         let mut apply = false;
+        let mut zoom = None;
         Frame::new()
             .fill(CANVAS_PANEL)
             .stroke(Stroke::new(1.0, Color32::from_rgb(196, 192, 181)))
@@ -2388,23 +2470,25 @@ impl AaApp {
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
-                        RichText::new(&tile.label)
+                        RichText::new(&label)
                             .strong()
                             .size(16.0)
                             .color(Color32::from_rgb(52, 56, 52)),
                     );
                     ui.label(
-                        RichText::new(&tile.detail)
+                        RichText::new(&detail)
                             .small()
                             .color(Color32::from_rgb(101, 105, 96)),
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
                             .add(
-                                egui::Button::new("Use this setting")
+                                egui::Button::new("Apply selected")
                                     .min_size(Vec2::new(128.0, 30.0)),
                             )
-                            .on_hover_text("Apply this Compare option as the current result.")
+                            .on_hover_text(
+                                "Apply the selected Compare option as the current result.",
+                            )
                             .clicked()
                         {
                             apply = true;
@@ -2412,41 +2496,23 @@ impl AaApp {
                     });
                 });
                 ui.label(
-                    RichText::new(compare_tile_status_text(tile))
+                    RichText::new(status_text.clone())
                         .small()
-                        .color(compare_tile_status_color(tile)),
+                        .color(status_color),
+                );
+                ui.label(
+                    RichText::new(compare_pipeline_label(line_extractor))
+                        .small()
+                        .color(Color32::from_rgb(92, 96, 88)),
                 );
                 ui.add_space(10.0);
 
-                let stages = if matches!(selection.line_extractor, LineExtractorChoice::Classic) {
-                    vec![
-                        ("Input", self.original_texture.as_ref(), "Input pending"),
-                        ("Lines", tile.line_texture.as_ref(), "Lines pending"),
-                        (
-                            "Direction",
-                            tile.orientation_texture.as_ref(),
-                            "Direction pending",
-                        ),
-                        ("ASCII", tile.ascii_texture.as_ref(), "ASCII pending"),
-                    ]
-                } else {
-                    vec![
-                        (
-                            "AI lineart",
-                            tile.ai_lineart_texture.as_ref(),
-                            "AI lineart pending",
-                        ),
-                        ("1px lines", tile.line_texture.as_ref(), "1px lines pending"),
-                        (
-                            "Direction",
-                            tile.orientation_texture.as_ref(),
-                            "Direction pending",
-                        ),
-                        ("ASCII", tile.ascii_texture.as_ref(), "ASCII pending"),
-                    ]
-                };
-                compare_stage_grid(ui, &stages);
+                zoom = compare_stage_grid(ui, &stages);
             });
+
+        if let Some(zoom) = zoom {
+            self.compare_zoom = Some(zoom);
+        }
 
         apply.then_some(index)
     }
@@ -2502,6 +2568,36 @@ impl AaApp {
         );
         self.result = Some(result);
         self.preview_tab = PreviewTab::Result;
+    }
+
+    fn show_compare_zoom(&mut self, ctx: &egui::Context) {
+        let Some(zoom) = self.compare_zoom.clone() else {
+            return;
+        };
+
+        let mut open = true;
+        egui::Window::new(zoom.label.clone())
+            .open(&mut open)
+            .resizable(true)
+            .collapsible(false)
+            .default_size(Vec2::new(900.0, 680.0))
+            .min_width(520.0)
+            .min_height(360.0)
+            .show(ctx, |ui| {
+                let available = ui.available_size();
+                texture_pane(
+                    ui,
+                    None,
+                    Some(&zoom.texture),
+                    "Preview pending",
+                    Vec2::new(available.x.max(520.0), available.y.max(340.0)),
+                    true,
+                );
+            });
+
+        if !open {
+            self.compare_zoom = None;
+        }
     }
 
     fn show_result_compare(&mut self, ui: &mut egui::Ui) {
@@ -2628,6 +2724,8 @@ impl eframe::App for AaApp {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(CANVAS_BG).inner_margin(Margin::same(18)))
             .show(ctx, |ui| self.preview(ui));
+
+        self.show_compare_zoom(ctx);
     }
 }
 
@@ -3477,15 +3575,27 @@ fn compare_tile(
     is_ready && response.clicked()
 }
 
-fn compare_stage_grid(ui: &mut egui::Ui, stages: &[(&str, Option<&TextureHandle>, &str)]) {
+fn compare_pipeline_label(extractor: LineExtractorChoice) -> &'static str {
+    match extractor {
+        LineExtractorChoice::Classic => {
+            "Pipeline: Source -> built-in extractor -> matcher lines -> direction -> ASCII"
+        }
+        LineExtractorChoice::Ai(_) => {
+            "Pipeline: Source -> AI model -> 1px cleanup matcher lines -> direction -> ASCII"
+        }
+    }
+}
+
+fn compare_stage_grid(ui: &mut egui::Ui, stages: &[CompareStageItem]) -> Option<CompareZoom> {
     let available_width = ui.available_width().max(260.0);
     let gap = 12.0;
     let columns: usize = if available_width >= 560.0 { 2 } else { 1 };
     let pane_width =
         ((available_width - gap * (columns.saturating_sub(1) as f32)) / columns as f32).max(240.0);
-    let pane_height = if columns == 2 { 240.0 } else { 280.0 };
+    let pane_height = if columns == 2 { 320.0 } else { 380.0 };
     let pane_size = Vec2::new(pane_width, pane_height);
 
+    let mut zoom = None;
     let mut index = 0usize;
     while index < stages.len() {
         ui.horizontal(|ui| {
@@ -3494,8 +3604,14 @@ fn compare_stage_grid(ui: &mut egui::Ui, stages: &[(&str, Option<&TextureHandle>
                 if index >= stages.len() {
                     break;
                 }
-                let (label, texture, placeholder) = stages[index];
-                texture_pane(ui, Some(label), texture, placeholder, pane_size, true);
+                if compare_stage_pane(ui, &stages[index], pane_size) {
+                    if let Some(texture) = stages[index].texture.clone() {
+                        zoom = Some(CompareZoom {
+                            label: stages[index].label.clone(),
+                            texture,
+                        });
+                    }
+                }
                 index += 1;
             }
         });
@@ -3503,6 +3619,71 @@ fn compare_stage_grid(ui: &mut egui::Ui, stages: &[(&str, Option<&TextureHandle>
             ui.add_space(gap);
         }
     }
+
+    zoom
+}
+
+fn compare_stage_pane(ui: &mut egui::Ui, stage: &CompareStageItem, pane_size: Vec2) -> bool {
+    let clickable = stage.texture.is_some();
+    let sense = if clickable {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(pane_size, sense);
+    let painter = ui.painter_at(rect);
+    let fill = if response.hovered() && clickable {
+        Color32::from_rgb(236, 232, 222)
+    } else {
+        CANVAS_PANEL
+    };
+
+    painter.rect_filled(rect, 0.0, fill);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0, Color32::from_rgb(196, 192, 181)),
+        egui::StrokeKind::Inside,
+    );
+
+    let mut content_rect = rect.shrink(12.0);
+    painter.text(
+        content_rect.left_top(),
+        egui::Align2::LEFT_TOP,
+        &stage.label,
+        FontId::new(12.0, FontFamily::Proportional),
+        Color32::from_rgb(75, 76, 72),
+    );
+    content_rect.min.y += 24.0;
+
+    if let Some(texture) = &stage.texture {
+        let image_size = fitted_size(texture.size_vec2(), content_rect.size(), true);
+        let image_rect = egui::Rect::from_center_size(content_rect.center(), image_size);
+        painter.image(
+            texture.id(),
+            image_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            Color32::WHITE,
+        );
+    } else {
+        let placeholder_rect = content_rect.shrink(12.0);
+        painter.rect_filled(placeholder_rect, 0.0, Color32::from_rgb(226, 222, 212));
+        painter.rect_stroke(
+            placeholder_rect,
+            0.0,
+            Stroke::new(1.0, Color32::from_rgb(198, 194, 183)),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            placeholder_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            &stage.placeholder,
+            FontId::new(12.0, FontFamily::Proportional),
+            Color32::from_rgb(89, 88, 81),
+        );
+    }
+
+    clickable && response.clicked()
 }
 
 fn compare_tile_status_text(tile: &CompareTile) -> String {

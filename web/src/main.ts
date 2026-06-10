@@ -269,6 +269,9 @@ const compareView = element<HTMLElement>("compare-view");
 const compareDetail = element<HTMLElement>("compare-detail");
 const compareGrid = element<HTMLElement>("compare-grid");
 const compareProgress = element<HTMLElement>("compare-progress");
+const stageZoom = element<HTMLElement>("stage-zoom");
+const stageZoomTitle = element<HTMLElement>("stage-zoom-title");
+const stageZoomCanvas = element<HTMLCanvasElement>("stage-zoom-canvas");
 const originalCanvas = element<HTMLCanvasElement>("original-canvas");
 const asciiCanvas = element<HTMLCanvasElement>("ascii-canvas");
 const lineCanvas = element<HTMLCanvasElement>("line-canvas");
@@ -415,6 +418,17 @@ function wireControls(): void {
     const tile = selectedCompareTile();
     if (tile?.state === "ready" && tile.result) {
       applyCompareTile(tile);
+    }
+  });
+  stageZoom.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    if (target.closest("[data-zoom-close]")) {
+      closeStageZoom();
+    }
+  });
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !stageZoom.hidden) {
+      closeStageZoom();
     }
   });
 
@@ -1454,8 +1468,12 @@ function renderCompareDetail(): void {
   apply.type = "button";
   apply.className = "compare-apply";
   apply.dataset.compareApply = "true";
-  apply.textContent = "Use this setting";
+  apply.textContent = "Apply selected";
   header.append(titleWrap, apply);
+
+  const pipeline = document.createElement("p");
+  pipeline.className = "compare-pipeline";
+  pipeline.textContent = comparePipelineLabel(tile.selection);
 
   const stages = document.createElement("div");
   stages.className = "compare-stage-grid";
@@ -1463,28 +1481,35 @@ function renderCompareDetail(): void {
   const stageData = isAi
     ? [
         {
-          label: "AI lineart",
+          label: "1 Source",
+          bytes: sourceImage?.rgba,
+          width: sourceImage?.width,
+          height: sourceImage?.height,
+          placeholder: "Source pending",
+        },
+        {
+          label: "2 AI extracted lineart",
           bytes: result.ai_line_rgba,
           width: result.ai_line_width,
           height: result.ai_line_height,
           placeholder: "AI lineart pending",
         },
         {
-          label: "1px lines",
+          label: "3 1px cleanup matcher lines",
           bytes: result.line_rgba,
           width: result.width,
           height: result.stats.working_height,
-          placeholder: "1px lines pending",
+          placeholder: "Matcher lines pending",
         },
         {
-          label: "Direction",
+          label: "4 Direction map",
           bytes: result.orientation_rgba,
           width: result.width,
           height: result.stats.working_height,
           placeholder: "Direction pending",
         },
         {
-          label: "ASCII",
+          label: "5 ASCII from lines",
           bytes: result.ascii_rgba,
           width: result.width,
           height: result.height,
@@ -1493,28 +1518,28 @@ function renderCompareDetail(): void {
       ]
     : [
         {
-          label: "Input",
+          label: "1 Source",
           bytes: sourceImage?.rgba,
           width: sourceImage?.width,
           height: sourceImage?.height,
-          placeholder: "Input pending",
+          placeholder: "Source pending",
         },
         {
-          label: "Lines",
+          label: "2 Built-in matcher lines",
           bytes: result.line_rgba,
           width: result.width,
           height: result.stats.working_height,
-          placeholder: "Lines pending",
+          placeholder: "Matcher lines pending",
         },
         {
-          label: "Direction",
+          label: "3 Direction map",
           bytes: result.orientation_rgba,
           width: result.width,
           height: result.stats.working_height,
           placeholder: "Direction pending",
         },
         {
-          label: "ASCII",
+          label: "4 ASCII from lines",
           bytes: result.ascii_rgba,
           width: result.width,
           height: result.height,
@@ -1526,8 +1551,14 @@ function renderCompareDetail(): void {
     stages.append(compareStage(stage.label, stage.bytes, stage.width, stage.height, stage.placeholder));
   }
 
-  article.append(header, stages);
+  article.append(header, pipeline, stages);
   compareDetail.replaceChildren(article);
+}
+
+function comparePipelineLabel(selection: CompareSelection): string {
+  return selection.lineExtractor === "builtin"
+    ? "Pipeline: Source -> built-in extractor -> matcher lines -> direction -> ASCII"
+    : "Pipeline: Source -> AI model -> 1px cleanup matcher lines -> direction -> ASCII";
 }
 
 function compareStage(
@@ -1544,9 +1575,17 @@ function compareStage(
   stage.append(label);
 
   if (bytes && width && height) {
+    const media = document.createElement("button");
+    media.type = "button";
+    media.className = "compare-stage-media";
+    media.title = "Open larger preview";
     const canvas = document.createElement("canvas");
     renderRgba(canvas, bytes, width, height);
-    stage.append(canvas);
+    media.append(canvas);
+    media.addEventListener("click", () => {
+      openStageZoom(labelText, bytes, width, height);
+    });
+    stage.append(media);
   } else {
     const placeholder = document.createElement("div");
     placeholder.className = "compare-placeholder";
@@ -1555,6 +1594,21 @@ function compareStage(
   }
 
   return stage;
+}
+
+function openStageZoom(
+  labelText: string,
+  bytes: Uint8Array | Uint8ClampedArray | number[],
+  width: number,
+  height: number,
+): void {
+  stageZoomTitle.textContent = labelText;
+  renderRgba(stageZoomCanvas, bytes, width, height);
+  stageZoom.hidden = false;
+}
+
+function closeStageZoom(): void {
+  stageZoom.hidden = true;
 }
 
 function compareDetailPlaceholder(): HTMLElement {

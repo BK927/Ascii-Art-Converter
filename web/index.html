@@ -253,6 +253,16 @@
         </section>
       </main>
     </div>
+    <div class="stage-zoom" id="stage-zoom" hidden>
+      <button class="stage-zoom-backdrop" type="button" data-zoom-close aria-label="Close preview"></button>
+      <section class="stage-zoom-panel" aria-label="Expanded compare stage">
+        <div class="stage-zoom-head">
+          <h2 id="stage-zoom-title">Preview</h2>
+          <button type="button" data-zoom-close>Close</button>
+        </div>
+        <canvas id="stage-zoom-canvas"></canvas>
+      </section>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
