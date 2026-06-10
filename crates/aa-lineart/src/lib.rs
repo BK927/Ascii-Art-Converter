@@ -211,7 +211,7 @@ impl ModelStatus {
             Self::Available {
                 location: ModelLocation::AppFolder,
                 ..
-            } => "App folder",
+            } => "Installed",
             Self::Available {
                 location: ModelLocation::Installed,
                 ..
@@ -776,7 +776,7 @@ mod tests {
                 location: ModelLocation::AppFolder
             }
             .label(),
-            "App folder"
+            "Installed"
         );
         assert_eq!(
             ModelStatus::Available {
